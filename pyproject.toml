@@ -1,0 +1,33 @@
+[project]
+name = "vfc"
+version = "0.1.0"
+description = "Video fact-checking pipeline: scrape, transcribe, detect checkworthy claims"
+requires-python = ">=3.10"
+dependencies = [
+    "yt-dlp",
+    "faster-whisper",
+    "openai",
+    "python-dotenv",
+    "transformers",
+    "torch",
+    "sentence-transformers",
+    "requests",
+]
+
+[project.scripts]
+vfc = "pipeline:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = [
+    "config",
+    "scraper",
+    "transcriber",
+    "claim_detector",
+    "deduplicator",
+    "fact_checker",
+    "pipeline",
+]
