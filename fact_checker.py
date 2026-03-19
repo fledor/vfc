@@ -76,25 +76,26 @@ def _search_kb(query: str) -> list[dict]:
 QUERY_REWRITE_PROMPT = """\
 You are a search query optimizer for a fact-checking knowledge base.
 
-Given a CLAIM extracted from a video transcript, rewrite it as a short, clean \
-search query that will retrieve relevant fact-checks. Use the same language as \
-the claim.
+Given a CLAIM extracted from a video transcript, produce one or two short \
+search queries that will retrieve relevant fact-checks. Use the same language \
+as the claim.
 
 Rules:
-- Fix any remaining transcription errors in names.
-- Strip attributions — keep only the factual assertion.
-- Remove filler and hedging.
-- Keep it concise (max ~15 words).
-- Output only the search query, nothing else.\
+- QUERY 1 (always): The core factual assertion, concise (max ~15 words). \
+Fix transcription errors in names. Remove filler and hedging.
+- QUERY 2 (only if the claim contains reported speech or attribution, e.g. \
+"X said Y" or "according to X"): A second query focusing on the attributed \
+assertion itself, without the speaker.
+- Output one query per line. Nothing else.\
 """
 
 
-def _rewrite_query(
+def _rewrite_queries(
     claim_text: str,
     client: OpenAI,
     model: str = OPENAI_MODEL,
-) -> str:
-    """Reformulate a claim into a cleaner KB search query."""
+) -> list[str]:
+    """Reformulate a claim into one or two KB search queries."""
     try:
         response = client.chat.completions.create(
             model=model,
@@ -103,14 +104,15 @@ def _rewrite_query(
                 {"role": "user", "content": claim_text},
             ],
             temperature=0.0,
-            max_tokens=60,
+            max_tokens=80,
         )
-        rewritten = (response.choices[0].message.content or "").strip()
-        if rewritten:
-            return rewritten
+        raw = (response.choices[0].message.content or "").strip()
+        queries = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        if queries:
+            return queries
     except Exception:
         logger.exception("Query rewrite failed, using original claim.")
-    return claim_text
+    return [claim_text]
 
 
 def _format_factcheck(fc: dict) -> str:
@@ -170,26 +172,32 @@ def check_claims(
 
     for i, claim in enumerate(claims):
         claim_text = claim["claim_text"]
-        query = _rewrite_query(claim_text, client)
-        claim["search_query"] = query
+        queries = _rewrite_queries(claim_text, client)
+        claim["search_queries"] = queries
         logger.info(
             "Searching KB for claim %d/%d: %s",
             i + 1,
             len(claims),
-            query[:80],
+            claim_text[:80],
         )
-        if query != claim_text:
-            logger.info("  (rewritten from: %s)", claim_text[:80])
+        for q in queries:
+            logger.info("  query: %s", q[:80])
 
-        try:
-            results = _search_kb(query)
-        except Exception:
-            logger.exception("KB search failed for query: %s", query[:80])
-            claim["factchecks"] = []
-            claim["relevant_factchecks"] = []
-            continue
+        seen_ids: set[str] = set()
+        results: list[dict] = []
+        for q in queries:
+            try:
+                batch = _search_kb(q)
+            except Exception:
+                logger.exception("KB search failed for query: %s", q[:80])
+                continue
+            for fc in batch:
+                aid = fc.get("article_id", fc.get("url", ""))
+                if aid not in seen_ids:
+                    seen_ids.add(aid)
+                    results.append(fc)
 
-        logger.info("  Got %d result(s) from KB.", len(results))
+        logger.info("  Got %d unique result(s) from KB.", len(results))
         claim["factchecks"] = results
 
         relevant = []

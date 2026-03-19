@@ -34,7 +34,7 @@ Respond with exactly one of:
 - DISTINCT   (they are about different facts, keep both)\
 """
 
-SOFT_THRESHOLD = 0.65
+SOFT_THRESHOLD = 0.55
 
 
 def _get_model() -> SentenceTransformer:
