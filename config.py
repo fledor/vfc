@@ -11,6 +11,7 @@ AUDIO_DIR = DATA_DIR / "audio"
 TRANSCRIPTS_DIR = DATA_DIR / "transcripts"
 CLAIMS_DIR = DATA_DIR / "claims"
 FACTCHECKS_DIR = DATA_DIR / "factchecks"
+RESULTS_DIR = DATA_DIR / "results"
 
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3")
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "auto")
@@ -45,5 +46,5 @@ KB_API_KEY = os.getenv("KB_API_KEY", "")
 KB_SEARCH_LIMIT = int(os.getenv("KB_SEARCH_LIMIT", "10"))
 KB_INCLUDE_EVIDENCE = os.getenv("KB_INCLUDE_EVIDENCE", "false").lower() == "true"
 
-for d in (AUDIO_DIR, TRANSCRIPTS_DIR, CLAIMS_DIR, FACTCHECKS_DIR):
+for d in (AUDIO_DIR, TRANSCRIPTS_DIR, CLAIMS_DIR, FACTCHECKS_DIR, RESULTS_DIR):
     d.mkdir(parents=True, exist_ok=True)

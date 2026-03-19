@@ -16,6 +16,7 @@ a fact-check knowledge base.
                    GPT-4o-mini extracts & decontextualises each claim (topic-aware prompt)
 5. Deduplicate     Sentence embeddings + LLM subsumption check
 6. Fact-check      Query reformulation → KB API retrieval → CoT relevance judgment
+7. Report          Generates concise JSON + markdown with only matched claims and verdicts
 ```
 
 ## Design choices and references
@@ -132,7 +133,7 @@ vfc
 # Single video
 vfc "https://www.youtube.com/watch?v=VIDEO_ID"
 
-# Whole playlist
+# Whole playlist (--max-videos = usable videos; private / failed slots are skipped)
 vfc "https://www.youtube.com/playlist?list=PLAYLIST_ID" --max-videos 10
 
 # Skip fact-check step (detection + dedup only)
@@ -152,12 +153,14 @@ topic.py           LLM-based topic extraction from video metadata + transcript
 claim_detector.py  Hybrid checkworthiness detection (classifier + LLM)
 deduplicator.py    Two-stage deduplication (embeddings + LLM subsumption)
 fact_checker.py    Query reformulation + KB search + CoT relevance judgment
+reporter.py        Generate concise JSON + markdown result reports
 pipeline.py        Orchestration and CLI entry point
 data/
   audio/           Downloaded WAV files + metadata JSON
   transcripts/     Transcript JSON + TXT files
   claims/          Detected claims JSON
-  factchecks/      Fact-check results JSON
+  factchecks/      Full fact-check results JSON
+  results/         Concise reports (JSON + markdown) with matched claims only
 ```
 
 ## References

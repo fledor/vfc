@@ -30,5 +30,6 @@ py-modules = [
     "claim_detector",
     "deduplicator",
     "fact_checker",
+    "reporter",
     "pipeline",
 ]

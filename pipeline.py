@@ -12,6 +12,7 @@ from claim_detector import detect_claims
 from config import TRANSCRIPTS_DIR
 from deduplicator import deduplicate
 from fact_checker import check_claims
+from reporter import generate_results
 from scraper import download_audio
 from topic import extract_topic
 from transcriber import transcribe
@@ -100,6 +101,13 @@ def run_pipeline(
         if not skip_factcheck:
             logger.info("=== Step 5: Searching fact-check knowledge base ===")
             claims = check_claims(claims, video_id)
+
+            logger.info("=== Step 6: Generating results ===")
+            generate_results(
+                claims, video_id,
+                video_title=video_title, channel=channel,
+                language=language, topic=topic,
+            )
 
         _print_report(claims, video_id)
 
