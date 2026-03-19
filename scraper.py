@@ -46,23 +46,37 @@ def download_audio(
     }
 
     with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+        info = ydl.extract_info(url, download=False)
 
     entries = info.get("entries", [info]) if info else []
+    to_download: list[str] = []
+
     for entry in entries:
         if entry is None:
             continue
         video_id = entry["id"]
+        audio_file = output_dir / f"{video_id}.wav"
         meta = {
             "video_id": video_id,
             "title": entry.get("title", ""),
+            "channel": entry.get("channel") or entry.get("uploader", ""),
             "duration": entry.get("duration"),
-            "audio_path": str(output_dir / f"{video_id}.wav"),
+            "audio_path": str(audio_file),
         }
         collected.append(meta)
 
         meta_path = output_dir / f"{video_id}.meta.json"
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2))
-        logger.info("Saved metadata: %s", meta_path)
+
+        if audio_file.exists():
+            logger.info("Audio already cached: %s — skipping download.", audio_file)
+        else:
+            to_download.append(entry.get("webpage_url") or entry["url"])
+
+    if to_download:
+        opts_dl = {**opts}
+        with yt_dlp.YoutubeDL(opts_dl) as ydl:
+            for vid_url in to_download:
+                ydl.download([vid_url])
 
     return collected

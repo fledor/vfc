@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
 
 from claim_detector import detect_claims
+from config import TRANSCRIPTS_DIR
 from deduplicator import deduplicate
 from fact_checker import check_claims
 from scraper import download_audio
+from topic import extract_topic
 from transcriber import transcribe
 
 logger = logging.getLogger(__name__)
@@ -23,13 +26,13 @@ DEFAULT_PLAYLIST = (
 def _print_report(claims: list[dict], video_id: str) -> None:
     logger.info("=== Report for %s ===", video_id)
     for i, claim in enumerate(claims, 1):
-        text = claim.get("claim_text_normalised") or claim["claim_text"]
-        score = claim.get("cw_score_max", "?")
+        text = claim["claim_text"]
+        score = claim.get("cfs_score", claim.get("cw_score_max", 0))
         relevant = claim.get("relevant_factchecks", [])
         logger.info(
-            "  [%d] (cw=%.2f) %s",
+            "  [%d] (cfs=%.2f) %s",
             i,
-            float(score) if score != "?" else 0,
+            float(score),
             text[:120],
         )
         if relevant:
@@ -41,28 +44,49 @@ def _print_report(claims: list[dict], video_id: str) -> None:
 
 
 def run_pipeline(
-    playlist_url: str,
+    url: str,
     max_videos: int = 1,
     skip_factcheck: bool = False,
 ) -> None:
     logger.info("=== Step 1: Scraping audio from YouTube ===")
-    videos = download_audio(playlist_url, max_videos=max_videos)
+    videos = download_audio(url, max_videos=max_videos)
     logger.info("Downloaded %d video(s).", len(videos))
 
     for video in videos:
         video_id = video["video_id"]
         audio_path = Path(video["audio_path"])
+        video_title = video.get("title", "")
+        channel = video.get("channel", "")
 
         if not audio_path.exists():
             logger.error("Audio file not found: %s — skipping.", audio_path)
             continue
 
         logger.info("=== Step 2: Transcribing %s ===", video_id)
-        segments = transcribe(audio_path)
-        logger.info("Transcribed %d segments.", len(segments))
+        transcript_path = TRANSCRIPTS_DIR / f"{video_id}.json"
+        if transcript_path.exists():
+            logger.info("Using cached transcript: %s", transcript_path)
+            raw = json.loads(transcript_path.read_text())
+            if isinstance(raw, dict):
+                segments = raw["segments"]
+                language = raw.get("language", "de")
+            else:
+                segments = raw
+                language = "de"
+        else:
+            segments, language = transcribe(audio_path)
+        logger.info("Transcribed %d segments (language=%s).", len(segments), language)
+
+        logger.info("=== Step 2b: Extracting topic ===")
+        topic = extract_topic(
+            segments, language, video_title=video_title, channel=channel,
+        )
+        logger.info("Topic: %s", topic)
 
         logger.info("=== Step 3: Detecting checkworthy claims for %s ===", video_id)
-        claims = detect_claims(segments, video_id)
+        claims = detect_claims(
+            segments, video_id, language=language, topic=topic,
+        )
         logger.info("Detected %d checkworthy claim(s).", len(claims))
 
         if not claims:
@@ -85,9 +109,10 @@ def run_pipeline(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Video fact-checking pipeline")
     parser.add_argument(
-        "--playlist-url",
+        "url",
+        nargs="?",
         default=DEFAULT_PLAYLIST,
-        help="YouTube playlist or video URL",
+        help="YouTube video or playlist URL (default: Markus Lanz playlist)",
     )
     parser.add_argument(
         "--max-videos",
@@ -115,7 +140,7 @@ def main() -> None:
 
     try:
         run_pipeline(
-            args.playlist_url,
+            args.url,
             args.max_videos,
             skip_factcheck=args.skip_factcheck,
         )

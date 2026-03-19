@@ -26,6 +26,7 @@ py-modules = [
     "config",
     "scraper",
     "transcriber",
+    "topic",
     "claim_detector",
     "deduplicator",
     "fact_checker",
