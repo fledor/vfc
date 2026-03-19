@@ -13,15 +13,19 @@ CLAIMS_DIR = DATA_DIR / "claims"
 FACTCHECKS_DIR = DATA_DIR / "factchecks"
 
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3")
-WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "de")
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "auto")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-# Checkworthiness detection model
-# Default: Sami92/XLM-R-Large-ClaimDetection (German-trained, on HuggingFace)
-# Alternative: set CW_MODEL_PATH to a local MultiCW fine-tuned checkpoint
-CW_MODEL_NAME = os.getenv("CW_MODEL_NAME", "Sami92/XLM-R-Large-ClaimDetection")
+# Per-language checkworthiness models (all 3-class ClaimBuster taxonomy).
+# Set CW_MODEL_NAME to override language routing with a single model.
+CW_MODELS: dict[str, str] = {
+    "en": "whispAI/ClaimBuster-DeBERTaV2",
+    "de": "Nithiwat/mdeberta-v3-base_claimbuster",
+}
+CW_MODEL_FALLBACK = "Nithiwat/mdeberta-v3-base_claimbuster"
+CW_MODEL_NAME = os.getenv("CW_MODEL_NAME", "")
 CW_MODEL_PATH = os.getenv("CW_MODEL_PATH", "")
 CW_CONFIDENCE_THRESHOLD = float(os.getenv("CW_CONFIDENCE_THRESHOLD", "0.5"))
 

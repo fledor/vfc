@@ -1,11 +1,14 @@
-"""Detect checkworthy claims using a fine-tuned transformer classifier.
+"""Detect checkworthy claims using a hybrid classifier + LLM pipeline.
 
-Default model: Sami92/XLM-R-Large-ClaimDetection (XLM-R Large fine-tuned on
-German data from GermEval 2021 + GPT-4o-annotated Telegram posts).
-Labels: "factual" (= contains a verifiable claim) vs "non-factual".
+Classifier: language-routed ClaimBuster models (3-class: NFS/UFS/CFS).
+  - English: whispAI/ClaimBuster-DeBERTaV2  (84.2% accuracy)
+  - German and others: Nithiwat/mdeberta-v3-base_claimbuster (83%, multilingual)
 
-Pipeline: merge whisper segments into sentences -> classify each sentence ->
-group adjacent checkworthy sentences -> optionally normalise claims with LLM.
+Pipeline:
+  1. Merge Whisper segments into sentences
+  2. Classify each sentence (keep only CFS above threshold)
+  3. For each CFS sentence, call GPT-4o-mini with surrounding context to
+     extract a concise, self-contained claim and fix transcription errors
 """
 
 from __future__ import annotations
@@ -20,68 +23,94 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from config import (
     CLAIMS_DIR,
     CW_CONFIDENCE_THRESHOLD,
+    CW_MODEL_FALLBACK,
     CW_MODEL_NAME,
     CW_MODEL_PATH,
+    CW_MODELS,
     OPENAI_API_KEY,
     OPENAI_MODEL,
 )
 
 logger = logging.getLogger(__name__)
 
-_tokenizer: AutoTokenizer | None = None
-_model: AutoModelForSequenceClassification | None = None
+_models: dict[str, tuple[AutoTokenizer, AutoModelForSequenceClassification, int]] = {}
 
-# Label that corresponds to "this is a factual / checkworthy claim".
-# Sami92/XLM-R-Large-ClaimDetection uses "factual" vs "non-factual";
-# MultiCW models use label index 1 for checkworthy.  We resolve at runtime.
-_POSITIVE_LABEL_ID: int | None = None
+EXTRACT_PROMPT_TEMPLATE = """\
+You are a claim extraction assistant for a fact-checking pipeline.
 
-NORMALISE_PROMPT = """\
-You are a claim extraction assistant. Given a passage from a German talk show \
-transcript that has been flagged as containing a checkworthy claim, extract the \
-core factual claim as a single concise sentence in German. Remove filler words, \
-speech artefacts, and irrelevant context. If the passage contains multiple \
-distinct claims, return each on its own line. Output only the claim(s), nothing else.\
+VIDEO TOPIC: {topic}
+
+You receive a SENTENCE that a classifier flagged as potentially check-worthy, \
+together with surrounding CONTEXT from the transcript.
+
+Your task:
+1. Decide whether the sentence truly contains a verifiable factual claim \
+(numbers, dates, statistics, specific events, attributable statements). \
+If it is merely an opinion, rhetorical question, vague assertion, or \
+conversational filler, respond with exactly: NONE
+2. If it does contain one or more verifiable claims, extract each as a \
+concise, FULLY DECONTEXTUALISED sentence in the original language of the \
+transcript. Each claim must be understandable without any surrounding context:
+   - Resolve ALL pronouns to the actual names of people, parties, or \
+institutions using the context.
+   - Name the specific event, election, or time period being discussed.
+   - Summarise rather than quote verbatim.
+   - Fix obvious transcription errors in names.
+   - Do NOT include claims that are merely someone's subjective assessment \
+unless they contain a specific verifiable fact.
+3. Output one claim per line. Output nothing else (no numbering, no \
+explanation).\
 """
 
 
-def _get_model() -> tuple[AutoTokenizer, AutoModelForSequenceClassification]:
-    global _tokenizer, _model, _POSITIVE_LABEL_ID
-    if _tokenizer is None or _model is None:
-        model_id = CW_MODEL_PATH or CW_MODEL_NAME
-        logger.info("Loading checkworthiness model '%s'…", model_id)
-        _tokenizer = AutoTokenizer.from_pretrained(model_id)
-        _model = AutoModelForSequenceClassification.from_pretrained(model_id)
-        _model.eval()
-
-        id2label = _model.config.id2label or {}
-        _POSITIVE_LABEL_ID = _resolve_positive_label(id2label)
-        logger.info(
-            "Model loaded (labels: %s, positive_id=%s).",
-            id2label,
-            _POSITIVE_LABEL_ID,
-        )
-    return _tokenizer, _model
-
-
-def _resolve_positive_label(id2label: dict) -> int:
-    """Figure out which output index means 'checkworthy / factual claim'."""
+def _resolve_cfs_label(id2label: dict) -> int:
+    """Find the label index for 'Check-worthy Factual Statement'."""
     for idx, label in id2label.items():
         low = str(label).lower()
-        if low in ("factual", "checkworthy", "check-worthy", "claim", "yes", "1"):
+        if "check-worthy" in low or "check_worthy" in low or low == "cfs":
             return int(idx)
-    # Fallback: assume last index is the positive class
+    for idx, label in id2label.items():
+        low = str(label).lower()
+        if low in ("factual", "checkworthy", "claim", "yes", "1"):
+            return int(idx)
     return max(id2label.keys(), default=1)
+
+
+def _get_model(
+    language: str = "de",
+) -> tuple[AutoTokenizer, AutoModelForSequenceClassification, int]:
+    """Load (and cache) the checkworthiness model for the given language."""
+    if CW_MODEL_PATH:
+        model_id = CW_MODEL_PATH
+    elif CW_MODEL_NAME:
+        model_id = CW_MODEL_NAME
+    else:
+        model_id = CW_MODELS.get(language, CW_MODEL_FALLBACK)
+
+    if model_id in _models:
+        return _models[model_id]
+
+    logger.info("Loading checkworthiness model '%s' (lang=%s)…", model_id, language)
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForSequenceClassification.from_pretrained(model_id)
+    model.eval()
+
+    id2label = model.config.id2label or {}
+    cfs_id = _resolve_cfs_label(id2label)
+    logger.info("Model loaded (labels: %s, CFS_id=%s).", id2label, cfs_id)
+
+    _models[model_id] = (tokenizer, model, cfs_id)
+    return tokenizer, model, cfs_id
 
 
 def _merge_segments_into_sentences(
     segments: list[dict],
     max_words: int = 40,
 ) -> list[dict]:
-    """Concatenate adjacent whisper segments into sentence-sized windows.
+    """Concatenate adjacent Whisper segments into sentence-sized windows.
 
-    Uses punctuation cues (period, question mark, exclamation mark) as natural
-    break points, falling back to a word-count limit.
+    Uses punctuation cues as natural break points, falling back to a
+    word-count limit.
     """
     sentences: list[dict] = []
     buf_texts: list[str] = []
@@ -128,12 +157,12 @@ def _merge_segments_into_sentences(
 @torch.no_grad()
 def _classify_sentences(
     sentences: list[dict],
+    language: str = "de",
     batch_size: int = 16,
 ) -> list[dict]:
-    """Run checkworthiness classification on each sentence."""
-    tokenizer, model = _get_model()
+    """Classify each sentence and store the CFS probability."""
+    tokenizer, model, cfs_id = _get_model(language)
     device = next(model.parameters()).device
-    pos_id = _POSITIVE_LABEL_ID or 1
 
     for batch_start in range(0, len(sentences), batch_size):
         batch = sentences[batch_start : batch_start + batch_size]
@@ -151,82 +180,100 @@ def _classify_sentences(
         probs = torch.softmax(logits, dim=-1)
 
         for j, sent in enumerate(batch):
-            sent["cw_score"] = probs[j, pos_id].item()
+            sent["cfs_score"] = probs[j, cfs_id].item()
+            sent["predicted_label"] = logits[j].argmax(-1).item()
 
     return sentences
 
 
-def _group_checkworthy(
+def _extract_claims_llm(
     sentences: list[dict],
-    threshold: float = CW_CONFIDENCE_THRESHOLD,
+    cfs_indices: list[int],
+    topic: str = "",
+    context_window: int = 2,
+    model: str = OPENAI_MODEL,
 ) -> list[dict]:
-    """Group adjacent sentences that exceed the checkworthiness threshold."""
-    claims: list[dict] = []
-    current: dict | None = None
-
-    for sent in sentences:
-        if sent["cw_score"] >= threshold:
-            if current is None:
-                current = {
-                    "texts": [sent["text"]],
-                    "start": sent["start"],
-                    "end": sent["end"],
-                    "segment_indices": list(sent["segment_indices"]),
-                    "cw_scores": [sent["cw_score"]],
-                }
-            else:
-                current["texts"].append(sent["text"])
-                current["end"] = sent["end"]
-                current["segment_indices"].extend(sent["segment_indices"])
-                current["cw_scores"].append(sent["cw_score"])
-        else:
-            if current is not None:
-                claims.append(_finalise_group(current))
-                current = None
-
-    if current is not None:
-        claims.append(_finalise_group(current))
-
-    return claims
-
-
-def _finalise_group(group: dict) -> dict:
-    scores = group["cw_scores"]
-    return {
-        "claim_text": " ".join(group["texts"]),
-        "start": group["start"],
-        "end": group["end"],
-        "segment_indices": group["segment_indices"],
-        "cw_score_mean": sum(scores) / len(scores),
-        "cw_score_max": max(scores),
-    }
-
-
-def _normalise_claims_llm(claims: list[dict], model: str = OPENAI_MODEL) -> list[dict]:
-    """Use an LLM to clean up claim text (remove speech artefacts, extract core claim)."""
+    """For each CFS sentence, send it with context to GPT-4o-mini for extraction."""
     if not OPENAI_API_KEY:
-        logger.warning("OPENAI_API_KEY not set – skipping LLM claim normalisation.")
-        return claims
+        logger.warning("OPENAI_API_KEY not set – returning raw CFS sentences.")
+        return [
+            {
+                "claim_text": sentences[i]["text"],
+                "start": sentences[i]["start"],
+                "end": sentences[i]["end"],
+                "segment_indices": sentences[i]["segment_indices"],
+                "cfs_score": sentences[i]["cfs_score"],
+            }
+            for i in cfs_indices
+        ]
+
+    system_prompt = EXTRACT_PROMPT_TEMPLATE.format(topic=topic or "unknown")
 
     from openai import OpenAI
 
     client = OpenAI(api_key=OPENAI_API_KEY)
+    claims: list[dict] = []
 
-    for claim in claims:
+    for idx in cfs_indices:
+        sent = sentences[idx]
+
+        ctx_start = max(0, idx - context_window)
+        ctx_end = min(len(sentences), idx + context_window + 1)
+        context_lines = []
+        for ci in range(ctx_start, ctx_end):
+            marker = ">>>" if ci == idx else "   "
+            context_lines.append(f"{marker} {sentences[ci]['text']}")
+        context_block = "\n".join(context_lines)
+
+        user_msg = (
+            f"SENTENCE (flagged as check-worthy):\n{sent['text']}\n\n"
+            f"CONTEXT:\n{context_block}"
+        )
+
+        logger.debug("LLM extract for sentence %d: %s", idx, sent["text"][:80])
+
         try:
             response = client.chat.completions.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": NORMALISE_PROMPT},
-                    {"role": "user", "content": claim["claim_text"]},
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_msg},
                 ],
                 temperature=0.0,
+                max_tokens=300,
             )
-            normalised = (response.choices[0].message.content or "").strip()
-            if normalised:
-                claim["claim_text_normalised"] = normalised
+            answer = (response.choices[0].message.content or "").strip()
+
+            if answer.upper() == "NONE":
+                logger.debug("  LLM discarded sentence %d.", idx)
+                continue
+
+            for line in answer.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                claims.append({
+                    "claim_text": line,
+                    "claim_original": sent["text"],
+                    "start": sent["start"],
+                    "end": sent["end"],
+                    "segment_indices": sent["segment_indices"],
+                    "cfs_score": sent["cfs_score"],
+                })
         except Exception:
-            logger.exception("LLM normalisation failed for claim: %s", claim["claim_text"][:80])
+            logger.exception(
+                "LLM extraction failed for sentence %d: %s",
+                idx,
+                sent["text"][:80],
+            )
+            claims.append({
+                "claim_text": sent["text"],
+                "claim_original": sent["text"],
+                "start": sent["start"],
+                "end": sent["end"],
+                "segment_indices": sent["segment_indices"],
+                "cfs_score": sent["cfs_score"],
+            })
 
     return claims
 
@@ -234,15 +281,16 @@ def _normalise_claims_llm(claims: list[dict], model: str = OPENAI_MODEL) -> list
 def detect_claims(
     segments: list[dict],
     video_id: str,
+    language: str = "de",
+    topic: str = "",
     output_dir: Path = CLAIMS_DIR,
-    normalise: bool = True,
 ) -> list[dict]:
     """Detect checkworthy claims from transcript segments.
 
-    1. Merge whisper segments into sentences.
-    2. Classify each sentence with the checkworthiness model.
-    3. Group adjacent checkworthy sentences.
-    4. Optionally normalise claims with an LLM.
+    1. Merge Whisper segments into sentences.
+    2. Classify each sentence with the language-appropriate ClaimBuster model.
+    3. Filter to CFS (check-worthy factual) sentences above threshold.
+    4. Use GPT-4o-mini to extract concise claims from each CFS sentence.
 
     Returns a list of claim dicts.
     """
@@ -250,23 +298,30 @@ def detect_claims(
     sentences = _merge_segments_into_sentences(segments)
     logger.info("Created %d sentences.", len(sentences))
 
-    logger.info("Classifying sentences for checkworthiness…")
-    sentences = _classify_sentences(sentences)
+    logger.info("Classifying sentences for checkworthiness (lang=%s)…", language)
+    sentences = _classify_sentences(sentences, language=language)
 
-    cw_count = sum(1 for s in sentences if s["cw_score"] >= CW_CONFIDENCE_THRESHOLD)
+    cfs_indices = [
+        i
+        for i, s in enumerate(sentences)
+        if s["cfs_score"] >= CW_CONFIDENCE_THRESHOLD
+    ]
     logger.info(
-        "%d / %d sentences above threshold (%.2f).",
-        cw_count,
+        "%d / %d sentences classified as CFS (threshold=%.2f).",
+        len(cfs_indices),
         len(sentences),
         CW_CONFIDENCE_THRESHOLD,
     )
 
-    claims = _group_checkworthy(sentences)
-    logger.info("Grouped into %d claim span(s).", len(claims))
+    if not cfs_indices:
+        logger.info("No check-worthy sentences found.")
+        output_path = output_dir / f"{video_id}.json"
+        output_path.write_text("[]")
+        return []
 
-    if normalise and claims:
-        logger.info("Normalising claims with LLM…")
-        claims = _normalise_claims_llm(claims)
+    logger.info("Extracting claims with LLM…")
+    claims = _extract_claims_llm(sentences, cfs_indices, topic=topic)
+    logger.info("Extracted %d claim(s) from %d CFS sentences.", len(claims), len(cfs_indices))
 
     output_path = output_dir / f"{video_id}.json"
     output_path.write_text(json.dumps(claims, ensure_ascii=False, indent=2))

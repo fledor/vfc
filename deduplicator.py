@@ -1,4 +1,10 @@
-"""Deduplicate claims using multilingual sentence embeddings."""
+"""Deduplicate claims using embeddings + LLM subsumption check.
+
+Two-stage approach:
+  1. Cosine similarity on sentence embeddings catches near-identical pairs.
+  2. For borderline pairs (between a soft and hard threshold), an LLM decides
+     whether one claim subsumes or duplicates the other.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +12,29 @@ import logging
 
 from sentence_transformers import SentenceTransformer
 
-from config import DEDUP_MODEL_NAME, DEDUP_SIMILARITY_THRESHOLD
+from config import (
+    DEDUP_MODEL_NAME,
+    DEDUP_SIMILARITY_THRESHOLD,
+    OPENAI_API_KEY,
+    OPENAI_MODEL,
+)
 
 logger = logging.getLogger(__name__)
 
 _st_model: SentenceTransformer | None = None
+
+SUBSUMPTION_PROMPT = """\
+You are a deduplication assistant. Given two claims (A and B) extracted from \
+the same transcript, decide whether they are duplicates or one subsumes the other.
+
+Respond with exactly one of:
+- DUPLICATE  (they express the same factual assertion)
+- SUBSUMES_A (claim A contains everything in B, keep A)
+- SUBSUMES_B (claim B contains everything in A, keep B)
+- DISTINCT   (they are about different facts, keep both)\
+"""
+
+SOFT_THRESHOLD = 0.65
 
 
 def _get_model() -> SentenceTransformer:
@@ -22,26 +46,51 @@ def _get_model() -> SentenceTransformer:
     return _st_model
 
 
-def _claim_text(claim: dict) -> str:
-    return claim.get("claim_text_normalised") or claim["claim_text"]
+def _llm_subsumption_check(text_a: str, text_b: str) -> str:
+    """Ask the LLM whether two claims are duplicates/subsumptions."""
+    if not OPENAI_API_KEY:
+        return "DISTINCT"
+
+    from openai import OpenAI
+
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    try:
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": SUBSUMPTION_PROMPT},
+                {"role": "user", "content": f"A: {text_a}\nB: {text_b}"},
+            ],
+            temperature=0.0,
+            max_tokens=10,
+        )
+        answer = (response.choices[0].message.content or "").strip().upper()
+        for label in ("DUPLICATE", "SUBSUMES_A", "SUBSUMES_B", "DISTINCT"):
+            if label in answer:
+                return label
+    except Exception:
+        logger.exception("LLM subsumption check failed.")
+    return "DISTINCT"
 
 
 def deduplicate(
     claims: list[dict],
     threshold: float = DEDUP_SIMILARITY_THRESHOLD,
 ) -> list[dict]:
-    """Remove near-duplicate claims based on cosine similarity.
+    """Remove duplicate and subsumed claims.
 
-    For each duplicate group, keeps the claim with the highest cw_score_max.
-    Adds a ``duplicates`` field listing merged claim texts.
+    Hard threshold (``threshold``, default 0.85): auto-merge without LLM.
+    Soft threshold (0.65 – ``threshold``): use LLM subsumption check.
+    Below soft threshold: always keep both.
+
+    For each group, keeps the longest claim text (most informative).
     """
     if len(claims) <= 1:
         return claims
 
     model = _get_model()
-    texts = [_claim_text(c) for c in claims]
+    texts = [c["claim_text"] for c in claims]
     embeddings = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
-
     sim_matrix = embeddings @ embeddings.T
 
     merged: list[bool] = [False] * len(claims)
@@ -55,18 +104,27 @@ def deduplicate(
         for j in range(i + 1, len(claims)):
             if merged[j]:
                 continue
-            if sim_matrix[i][j] >= threshold:
+            sim = float(sim_matrix[i][j])
+
+            if sim >= threshold:
                 group_indices.append(j)
                 merged[j] = True
+            elif sim >= SOFT_THRESHOLD:
+                verdict = _llm_subsumption_check(texts[i], texts[j])
+                if verdict in ("DUPLICATE", "SUBSUMES_A", "SUBSUMES_B"):
+                    group_indices.append(j)
+                    merged[j] = True
+                    logger.debug(
+                        "LLM merged (sim=%.2f, %s): '%s' + '%s'",
+                        sim, verdict, texts[i][:50], texts[j][:50],
+                    )
 
-        best_idx = max(group_indices, key=lambda k: claims[k].get("cw_score_max", 0))
+        best_idx = max(group_indices, key=lambda k: len(texts[k]))
         representative = dict(claims[best_idx])
 
         if len(group_indices) > 1:
             representative["duplicates"] = [
-                _claim_text(claims[k])
-                for k in group_indices
-                if k != best_idx
+                texts[k] for k in group_indices if k != best_idx
             ]
 
         deduplicated.append(representative)
