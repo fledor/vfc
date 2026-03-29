@@ -12,6 +12,7 @@ dependencies = [
     "torch",
     "sentence-transformers",
     "requests",
+    "tavily-python",
 ]
 
 [project.scripts]
@@ -30,6 +31,7 @@ py-modules = [
     "claim_detector",
     "deduplicator",
     "fact_checker",
+    "evidence",
     "reporter",
     "pipeline",
 ]

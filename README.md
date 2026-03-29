@@ -1,98 +1,23 @@
 # vfc — Video Fact-Checking Pipeline
 
-Universal fact-checking pipeline for YouTube videos in any language.
-Scrapes audio from any YouTube video or playlist, transcribes with Whisper
-(auto-detecting language), detects checkworthy claims using a hybrid
-classifier + LLM approach, deduplicates them, and cross-references against
-a fact-check knowledge base.
+Automated fact-checking pipeline for YouTube videos. Scrapes audio, transcribes
+with Whisper (auto-detecting language), detects checkworthy claims using a hybrid
+classifier + LLM approach, deduplicates, cross-references against fact-check
+databases, and searches authoritative web sources for supporting or refuting
+evidence.
 
 ## Pipeline
 
 ```
 1. Scrape          yt-dlp downloads audio (skips cached files)
 2. Transcribe      faster-whisper (large-v3) with automatic language detection
-3. Topic extract   LLM summarises topic from video title, channel, and transcript opening
-4. Detect claims   Language-routed ClaimBuster classifier filters check-worthy sentences
-                   GPT-4o-mini extracts & decontextualises each claim (topic-aware prompt)
+3. Topic extract   LLM summarises topic from video title, channel, and transcript (in transcript language)
+4. Detect claims   ClaimBuster classifier → GPT-4o-mini extraction with CoT decontextualisation
 5. Deduplicate     Sentence embeddings + LLM subsumption check
-6. Fact-check      Query reformulation → KB API retrieval → CoT relevance judgment
-7. Report          Generates concise JSON + markdown with only matched claims and verdicts
+6. Fact-check      Query reformulation → KB + Google Fact Check API → concurrent CoT relevance judgment
+7. Web evidence    Tavily search on authoritative domains → LLM evidence assessment (SUPPORTS/REFUTES/INSUFFICIENT)
+8. Report          JSON + markdown with matched claims, verdicts, and evidence summaries
 ```
-
-## Design choices and references
-
-### Language detection and model routing
-
-Whisper auto-detects the transcript language, which then routes downstream
-model selection. The ClaimBuster classifier is chosen per language:
-
-| Language | Model | Source |
-|----------|-------|--------|
-| English  | `whispAI/ClaimBuster-DeBERTaV2` | English-only, highest accuracy |
-| German   | `Nithiwat/mdeberta-v3-base_claimbuster` | Multilingual mDeBERTa |
-| Other    | `Nithiwat/mdeberta-v3-base_claimbuster` | Multilingual fallback |
-
-Set `CW_MODEL_NAME` to override language routing with a single model.
-
-### Topic extraction
-
-Before claim detection, the pipeline extracts a one-line topic summary from
-the YouTube video title, channel name, and first ~2 minutes of transcript.
-This topic is injected into the claim extraction prompt to improve
-decontextualisation and reduce hallucination — the model can resolve
-ambiguous references (e.g. "he" → specific politician) when it knows the
-video discusses a specific election or event.
-
-### Checkworthiness detection (hybrid)
-
-The pipeline uses a two-stage approach combining a fine-tuned classifier with
-an LLM, following findings from CheckThat! 2025 that "fine-tuned BERT-based
-models outperform LLMs on in-domain claim detection" while "LLMs generalize
-better to out-of-domain data" [(UNH at CheckThat! 2025)](https://arxiv.org/pdf/2509.06883).
-
-**Stage 1 — Classifier pre-filter:**
-The language-appropriate ClaimBuster model (see above) classifies each
-sentence using a 3-class taxonomy (NFS/UFS/CFS) that distinguishes
-*check-worthy factual* statements from *unimportant factual* and *non-factual*
-ones — critical for filtering conversational speech where most statements
-contain some factual element
-[(Arslan et al., 2020)](https://arxiv.org/abs/2004.14425).
-
-**Stage 2 — LLM extraction & decontextualisation:**
-Each CFS sentence is sent to GPT-4o-mini with surrounding context and the
-video topic to extract a concise, self-contained claim. The prompt enforces
-*decontextualisation* — resolving pronouns, naming actors, and specifying
-events — following best practices from the Claimify framework
-[(Chen et al., 2025)](https://aclanthology.org/2025.acl-long.348.pdf) and
-CLEF 2025 claim normalisation task
-[(Nakov et al., 2025)](https://arxiv.org/abs/2503.14828).
-
-### Deduplication (two-stage)
-
-Semantic deduplication uses `paraphrase-multilingual-mpnet-base-v2` embeddings
-with a two-tier strategy:
-
-- **Hard threshold** (>= 0.85 cosine similarity): auto-merge without LLM.
-- **Soft threshold** (0.65-0.85): LLM-based subsumption check determines
-  whether one claim contains the other.
-
-This addresses a limitation of pure embedding similarity where paraphrased
-or subsuming claims can fall below fixed thresholds
-[(NVIDIA NeMo SemDedup)](https://docs.nvidia.com/nemo-framework/user-guide/25.07/datacuration/semdedup.html).
-
-### Fact-check retrieval
-
-**Query reformulation:** Before querying the KB API, each claim is rewritten
-into a clean search query (fixing residual transcription errors, stripping
-attributions). This follows findings from hybrid fact-checking systems that
-query reformulation significantly improves retrieval recall
-[(Jiang et al., 2025)](https://arxiv.org/abs/2511.03217).
-
-**Relevance judgment (chain-of-thought):** Retrieved fact-checks are judged for
-relevance using a structured multi-criteria prompt that requires reasoning
-through SUBJECT, EVENT, and ASSERTION alignment before a verdict. This
-follows the multi-criteria decomposition approach from
-[(Stureborg et al., 2025)](https://arxiv.org/html/2507.09488v1).
 
 ## Setup
 
@@ -107,33 +32,36 @@ pip install -e .
 Create a `.env` file (or export the variables):
 
 ```bash
-OPENAI_API_KEY=sk-...          # for claim extraction, dedup, query rewrite, relevance
-KB_API_KEY=...       # fact-check knowledge base
+OPENAI_API_KEY=sk-...             # claim extraction, dedup, query rewrite, relevance judgment
+KB_API_KEY=...          # fact-check knowledge base
+GOOGLE_FACTCHECK_API_KEY=...     # Google Fact Check Tools API
+TAVILY_API_KEY=tvly-...          # web evidence search (required for --web-evidence)
 ```
 
 ### Optional environment variables
 
 ```bash
-WHISPER_LANGUAGE=auto                                  # auto-detect (default) or force e.g. "de"
-CW_MODEL_NAME=                                         # override per-language model routing
-CW_CONFIDENCE_THRESHOLD=0.5                            # CFS classification threshold
-DEDUP_SIMILARITY_THRESHOLD=0.85                        # hard cosine threshold for dedup
-KB_SEARCH_LIMIT=10                                     # max results per KB query
-KB_INCLUDE_EVIDENCE=false                              # set true for evidence (slow)
-WHISPER_MODEL=large-v3                                 # whisper model size
-OPENAI_MODEL=gpt-4o-mini                               # LLM model
+WHISPER_LANGUAGE=auto                  # auto-detect (default) or force e.g. "de"
+CW_MODEL_NAME=                        # override per-language model routing
+CW_CONFIDENCE_THRESHOLD=0.5           # CFS classification threshold
+DEDUP_SIMILARITY_THRESHOLD=0.85       # hard cosine threshold for dedup
+KB_SEARCH_LIMIT=10                    # max results per KB query
+WHISPER_MODEL=large-v3                # whisper model size
+OPENAI_MODEL=gpt-4o-mini             # LLM model for most steps
+OPENAI_EXTRACT_MODEL=                 # dedicated model for claim extraction (defaults to OPENAI_MODEL)
+OPENAI_RELEVANCE_MODEL=gpt-4.1-mini  # model for FC relevance judgment (defaults to gpt-4.1-mini)
+ENABLE_WEB_EVIDENCE=false             # enable web evidence search by default
+EVIDENCE_MAX_RESULTS=5                # max Tavily results per query
+EVIDENCE_DOMAINS_EXTRA=               # comma-separated additional trusted domains
 ```
 
 ## Usage
 
 ```bash
-# Full pipeline (default playlist, 1 video)
-vfc
+# Single video with web evidence
+vfc "https://www.youtube.com/watch?v=VIDEO_ID" --web-evidence
 
-# Single video
-vfc "https://www.youtube.com/watch?v=VIDEO_ID"
-
-# Whole playlist (--max-videos = usable videos; private / failed slots are skipped)
+# Whole playlist
 vfc "https://www.youtube.com/playlist?list=PLAYLIST_ID" --max-videos 10
 
 # Skip fact-check step (detection + dedup only)
@@ -142,6 +70,56 @@ vfc --skip-factcheck
 # Debug logging
 vfc --log-level DEBUG
 ```
+
+## Design choices and references
+
+### Language detection and model routing
+
+Whisper auto-detects the transcript language, which routes downstream model
+selection for the ClaimBuster classifier:
+
+| Language | Model | Source |
+|----------|-------|--------|
+| English  | `whispAI/ClaimBuster-DeBERTaV2` | English-only, highest accuracy |
+| German   | `Nithiwat/mdeberta-v3-base_claimbuster` | Multilingual mDeBERTa |
+| Other    | `Nithiwat/mdeberta-v3-base_claimbuster` | Multilingual fallback |
+
+### Checkworthiness detection (hybrid)
+
+Two-stage approach: fine-tuned classifiers outperform LLMs on in-domain claim
+detection, but LLMs generalise better and handle decontextualisation.
+
+**Stage 1 — Classifier:** ClaimBuster model
+([Arslan et al., 2020](https://arxiv.org/abs/2004.14425)) classifies sentences
+into NFS/UFS/CFS taxonomy, filtering conversational filler.
+
+**Stage 2 — LLM extraction:** GPT-4o-mini extracts self-contained claims using
+chain-of-thought decontextualisation — resolving pronouns, naming actors,
+specifying events and conflicts, anchoring statistics to their real-world context
+— inspired by the Claimify framework
+([Chen et al., 2025](https://aclanthology.org/2025.acl-long.348.pdf)).
+
+### Deduplication
+
+Semantic deduplication with `paraphrase-multilingual-mpnet-base-v2`:
+- **Hard threshold** (≥0.85 cosine): auto-merge
+- **Soft threshold** (0.55–0.85): LLM subsumption check
+
+### Fact-check retrieval
+
+Query reformulation + concurrent search across the KB and Google Fact
+Check API. Relevance judged via structured multi-criteria CoT prompt (MEDIA gate,
+SUBJECT, ASSERTION, TEMPORAL alignment) with two safeguards: a consistency check
+that rejects matches where the reasoning contradicts the verdict, and a
+confirmation call that requires two independent LLM judgments to agree.
+Concurrent thread pool (3 workers).
+
+### Web evidence search
+
+Tavily API searches authoritative domains (government sites, EU institutions,
+IEA, WHO, Reuters, AP, etc.) for supporting or refuting evidence. LLM assesses
+retrieved snippets as SUPPORTS / REFUTES / INSUFFICIENT / UNRELATED. Graceful
+handling of API credit exhaustion.
 
 ## Project structure
 
@@ -152,22 +130,19 @@ transcriber.py     Speech-to-text (faster-whisper), auto language detection
 topic.py           LLM-based topic extraction from video metadata + transcript
 claim_detector.py  Hybrid checkworthiness detection (classifier + LLM)
 deduplicator.py    Two-stage deduplication (embeddings + LLM subsumption)
-fact_checker.py    Query reformulation + KB search + CoT relevance judgment
-reporter.py        Generate concise JSON + markdown result reports
+fact_checker.py    Query reformulation + KB/Google search + concurrent CoT relevance judgment
+evidence.py        Tavily web evidence search + LLM assessment
+reporter.py        Generate JSON + markdown result reports
 pipeline.py        Orchestration and CLI entry point
 data/
   audio/           Downloaded WAV files + metadata JSON
   transcripts/     Transcript JSON + TXT files
   claims/          Detected claims JSON
   factchecks/      Full fact-check results JSON
-  results/         Concise reports (JSON + markdown) with matched claims only
+  results/         Reports (JSON + markdown) with matched claims and evidence
 ```
 
 ## References
 
 - Arslan, F., et al. (2020). *A Benchmark Dataset of Check-Worthy Factual Claims.* [arXiv:2004.14425](https://arxiv.org/abs/2004.14425)
-- Chen, Y., et al. (2025). *Claimify: LLM-Based Claim Extraction.* [ACL 2025](https://aclanthology.org/2025.acl-long.348.pdf)
-- Jiang, A., et al. (2025). *Hybrid Fact-Checking with KG, LLM, and Search Agents.* [arXiv:2511.03217](https://arxiv.org/abs/2511.03217)
-- Nakov, P., et al. (2025). *The CLEF-2025 CheckThat! Lab.* [arXiv:2503.14828](https://arxiv.org/abs/2503.14828)
-- Stureborg, R., et al. (2025). *Criteria-Based LLM Relevance Judgments.* [arXiv:2507.09488](https://arxiv.org/abs/2507.09488)
-- UNH at CheckThat! 2025. *Fine-tuning vs Prompting in Claim Extraction.* [arXiv:2509.06883](https://arxiv.org/abs/2509.06883)
+- Chen, Y., et al. (2025). *Claimify: LLM-Based Claim Extraction from Real-World Sources.* [ACL 2025](https://aclanthology.org/2025.acl-long.348.pdf)

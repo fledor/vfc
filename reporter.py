@@ -11,6 +11,11 @@ from config import RESULTS_DIR
 logger = logging.getLogger(__name__)
 
 
+def _has_evidence(claim: dict) -> bool:
+    we = claim.get("web_evidence")
+    return bool(we and we.get("assessment") in ("SUPPORTS", "REFUTES", "INSUFFICIENT"))
+
+
 def _fmt_timestamp(seconds: float) -> str:
     m, s = divmod(int(seconds), 60)
     h, m = divmod(m, 60)
@@ -32,7 +37,7 @@ def generate_results(
     """
     matched = [
         c for c in claims
-        if c.get("relevant_factchecks")
+        if c.get("relevant_factchecks") or _has_evidence(c)
     ]
 
     results_json = _build_results_json(
@@ -45,10 +50,14 @@ def generate_results(
     md_path = output_dir / f"{video_id}.md"
     md_path.write_text(md_text)
 
+    fc_count = sum(1 for c in matched if c.get("relevant_factchecks"))
+    ev_count = sum(1 for c in matched if _has_evidence(c))
     logger.info(
-        "Results: %d / %d claims matched fact-checks → %s",
+        "Results: %d / %d claims with matches (%d fact-checks, %d web evidence) → %s",
         len(matched),
         len(claims),
+        fc_count,
+        ev_count,
         output_dir,
     )
     return json_path, md_path
@@ -91,6 +100,18 @@ def _build_results_json(
                 "verdict_normalized": fc.get("verdict_normalized", ""),
                 "url": fc.get("url", ""),
             })
+
+        we = claim.get("web_evidence")
+        if _has_evidence(claim) and we:
+            entry["web_evidence"] = {
+                "assessment": we["assessment"],
+                "summary": we.get("summary", ""),
+                "sources": [
+                    {"title": s.get("title", ""), "url": s.get("url", "")}
+                    for s in we.get("sources", [])
+                ],
+            }
+
         summary["claims"].append(entry)
 
     return summary
@@ -110,9 +131,17 @@ def _build_markdown(results: dict) -> str:
     if results.get("topic"):
         lines.append(f"**Topic:** {results['topic']}")
     lines.append("")
+    fc_matched = sum(1 for c in results["claims"] if c.get("factchecks"))
+    ev_matched = sum(1 for c in results["claims"] if c.get("web_evidence"))
+    parts = []
+    if fc_matched:
+        parts.append(f"{fc_matched} with fact-checks")
+    if ev_matched:
+        parts.append(f"{ev_matched} with web evidence")
+    detail = f" ({', '.join(parts)})" if parts else ""
     lines.append(
         f"**{results['matched_claims']} / {results['total_claims']}** "
-        f"claims matched existing fact-checks.\n"
+        f"claims matched{detail}.\n"
     )
     lines.append("---\n")
 
@@ -125,17 +154,35 @@ def _build_markdown(results: dict) -> str:
         if claim.get("claim_original") and claim["claim_original"] != claim["claim_text"]:
             lines.append(f"*Original transcript:* {claim['claim_original']}\n")
 
-        lines.append("| Source | Verdict | Fact-Check Claim | Link |")
-        lines.append("|--------|---------|-----------------|------|")
-        for fc in claim["factchecks"]:
-            source = fc.get("source", "")
-            verdict = fc.get("verdict") or fc.get("verdict_normalized") or "—"
-            fc_claim = (fc.get("claim") or fc.get("title") or "").replace("|", "\\|")
-            if len(fc_claim) > 120:
-                fc_claim = fc_claim[:117] + "..."
-            url = fc.get("url", "")
-            link = f"[link]({url})" if url else "—"
-            lines.append(f"| {source} | {verdict} | {fc_claim} | {link} |")
+        if claim.get("factchecks"):
+            lines.append("| Source | Verdict | Fact-Check Claim | Link |")
+            lines.append("|--------|---------|-----------------|------|")
+            for fc in claim["factchecks"]:
+                source = fc.get("source", "")
+                verdict = fc.get("verdict") or fc.get("verdict_normalized") or "—"
+                fc_claim = (fc.get("claim") or fc.get("title") or "").replace("|", "\\|")
+                if len(fc_claim) > 120:
+                    fc_claim = fc_claim[:117] + "..."
+                url = fc.get("url", "")
+                link = f"[link]({url})" if url else "—"
+                lines.append(f"| {source} | {verdict} | {fc_claim} | {link} |")
+            lines.append("")
+
+        we = claim.get("web_evidence")
+        if we:
+            lines.append(
+                f"**Web Evidence** [{we['assessment']}]: {we.get('summary', '')}\n"
+            )
+            sources = we.get("sources", [])
+            if sources:
+                for s in sources:
+                    title = s.get("title", s.get("url", ""))
+                    url = s.get("url", "")
+                    if url:
+                        lines.append(f"- [{title}]({url})")
+                    else:
+                        lines.append(f"- {title}")
+                lines.append("")
 
         lines.append("")
 

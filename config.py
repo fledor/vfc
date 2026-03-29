@@ -18,6 +18,10 @@ WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "auto")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# Optional stronger model for claim extraction (better discourse reasoning)
+OPENAI_EXTRACT_MODEL = os.getenv("OPENAI_EXTRACT_MODEL", OPENAI_MODEL)
+# Stronger model for FC relevance judgment — nuanced multi-factor reasoning benefits from better model
+OPENAI_RELEVANCE_MODEL = os.getenv("OPENAI_RELEVANCE_MODEL", "gpt-4.1-mini")
 
 # Per-language checkworthiness models (all 3-class ClaimBuster taxonomy).
 # Set CW_MODEL_NAME to override language routing with a single model.
@@ -45,6 +49,55 @@ KB_API_URL = os.getenv(
 KB_API_KEY = os.getenv("KB_API_KEY", "")
 KB_SEARCH_LIMIT = int(os.getenv("KB_SEARCH_LIMIT", "10"))
 KB_INCLUDE_EVIDENCE = os.getenv("KB_INCLUDE_EVIDENCE", "false").lower() == "true"
+
+# Google Fact Check Tools API
+GOOGLE_FC_API_KEY = os.getenv("GOOGLE_FACTCHECK_API_KEY", "")
+GOOGLE_FC_MAX_AGE_DAYS = int(os.getenv("GOOGLE_FC_MAX_AGE_DAYS", "0"))
+GOOGLE_FC_PAGE_SIZE = int(os.getenv("GOOGLE_FC_PAGE_SIZE", "10"))
+
+# Web evidence search (authoritative sources via Tavily)
+ENABLE_WEB_EVIDENCE = os.getenv("ENABLE_WEB_EVIDENCE", "false").lower() == "true"
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+EVIDENCE_MAX_RESULTS = int(os.getenv("EVIDENCE_MAX_RESULTS", "5"))
+
+EVIDENCE_DOMAINS: list[str] = [
+    # German government / official
+    "bundesregierung.de",
+    "destatis.de",
+    "bundestag.de",
+    "bundesnetzagentur.de",
+    "bmwk.de",
+    "bafa.de",
+    "bmvg.de",
+    "auswaertiges-amt.de",
+    # EU institutions
+    "europa.eu",
+    "ec.europa.eu",
+    "consilium.europa.eu",
+    "eurostat.ec.europa.eu",
+    # International organisations
+    "nato.int",
+    "iea.org",
+    "imf.org",
+    "worldbank.org",
+    "un.org",
+    "who.int",
+    # Wire services / high-trust news
+    "reuters.com",
+    "apnews.com",
+    "dpa.com",
+    # German public broadcasters
+    "tagesschau.de",
+    "zdf.de",
+    "deutschlandfunk.de",
+    # Research / data
+    "statista.com",
+    "sipri.org",
+]
+
+_extra = os.getenv("EVIDENCE_DOMAINS_EXTRA", "")
+if _extra:
+    EVIDENCE_DOMAINS = EVIDENCE_DOMAINS + [d.strip() for d in _extra.split(",") if d.strip()]
 
 for d in (AUDIO_DIR, TRANSCRIPTS_DIR, CLAIMS_DIR, FACTCHECKS_DIR, RESULTS_DIR):
     d.mkdir(parents=True, exist_ok=True)

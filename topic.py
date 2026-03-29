@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 
 TOPIC_PROMPT = """\
 Given the metadata and opening transcript of a video, summarise the topic \
-in one concise English sentence (max 20 words). Focus on the specific \
-subject matter being discussed, not the format of the show.
+in one concise sentence (max 20 words) in the SAME LANGUAGE as the transcript. \
+Focus on the specific subject matter being discussed, not the format of the show.
 
 Output only the topic sentence, nothing else.\
 """

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 import torch
@@ -28,6 +29,7 @@ from config import (
     CW_MODEL_PATH,
     CW_MODELS,
     OPENAI_API_KEY,
+    OPENAI_EXTRACT_MODEL,
     OPENAI_MODEL,
 )
 
@@ -35,30 +37,57 @@ logger = logging.getLogger(__name__)
 
 _models: dict[str, tuple[AutoTokenizer, AutoModelForSequenceClassification, int]] = {}
 
+# Strips leading numbering like "1. ", "2) ", "3: " from CoT output lines.
+_NUM_PREFIX_RE = re.compile(r"^[\d]+[\.\):\-]\s*", re.ASCII)
+
 EXTRACT_PROMPT_TEMPLATE = """\
 You are a claim extraction assistant for a fact-checking pipeline.
 
 VIDEO TOPIC: {topic}
 
-You receive a SENTENCE flagged as potentially check-worthy, with surrounding \
-CONTEXT from the transcript.
+You receive a transcript FRAGMENT flagged as potentially check-worthy, \
+with surrounding CONTEXT (the flagged fragment is marked with >>>).
+
+Important: this transcript was produced by automatic speech recognition. \
+Each fragment is just a timed cutoff — NOT a complete sentence. A single \
+spoken statement typically spans multiple fragments. You MUST read the \
+surrounding context to understand the full statement being made.
 
 Your task:
-1. If the sentence contains no verifiable factual claim (just opinion, \
-rhetorical question, vague assertion, or filler), respond exactly: NONE
-2. Otherwise, MINIMALLY REWRITE the sentence so it is understandable without \
-context. Rules:
-   - Stay as close to the original wording as possible.
-   - Resolve pronouns to actual names using context \
-(e.g. "er" -> "Friedrich Merz").
-   - If someone is reporting or quoting another person's claim, PRESERVE \
-the attribution (e.g. "X sagte, dass Y" must stay attributed to X).
-   - Do NOT summarise, generalise, or strengthen/weaken the original.
-   - Do NOT introduce facts, words, or implications not in the original.
+1. Read the flagged fragment together with its context. First, reason \
+briefly about the following:
+   SUBJECT: Who or what is this fragment about, and what specific event, \
+conflict, or situation is being discussed? Use the VIDEO TOPIC and \
+surrounding context to identify the concrete referent. Trace pronouns, \
+implicit subjects, and contextual references back to specific names, \
+countries, or events.
+   STATEMENT: What complete factual statement is being made? Combine \
+information from the flagged fragment and its context as needed.
+   VERIFIABLE: Is this a verifiable factual claim, or purely opinion / \
+rhetorical question / vague assertion / filler? (yes or no)
+
+2. If VERIFIABLE is yes, output the claim as:
+   CLAIM: <a single complete, grammatically correct declarative sentence>
+
+   Rules for the CLAIM line:
+   - The sentence must be self-contained and understandable without context.
+   - Use the referents you identified in SUBJECT — do not guess or default \
+to a generic entity.
+   - Use context to disambiguate numbers and abbreviations.
+   - If someone is quoting another person, preserve the attribution.
+   - Be careful about speaker boundaries: do not merge content from \
+a different speaker into the claim.
+   - Do not add opinions or conclusions that were not stated. However, \
+you MUST resolve implicit references using the context: if the surrounding \
+sentences make clear which event, conflict, or entity the speaker means, \
+include that in the claim. This is decontextualisation, not adding information.
    - Fix only obvious transcription errors in proper nouns.
-   - Do NOT include claims that are purely subjective assessments unless \
-they contain a specific verifiable fact.
-3. Output one claim per line. Nothing else (no numbering, no explanation).\
+   - If the claim mentions a quantity, percentage, or statistic, specify \
+both the metric AND the specific event, conflict, or situation it pertains \
+to — a reader must know exactly which real-world context the numbers belong to.
+   - Output the claim in the SAME LANGUAGE as the transcript.
+
+3. If VERIFIABLE is no, respond with exactly: NONE\
 """
 
 
@@ -105,13 +134,16 @@ def _get_model(
 def _merge_segments_into_sentences(
     segments: list[dict],
     max_words: int = 40,
+    min_words: int = 6,
 ) -> list[dict]:
     """Concatenate adjacent Whisper segments into sentence-sized windows.
 
     Uses punctuation cues as natural break points, falling back to a
-    word-count limit.
+    word-count limit.  Very short sentences (< *min_words*) are merged
+    into the previous sentence to avoid orphan fragments like "Auf 140
+    Tage." being separated from the sentence they complete.
     """
-    sentences: list[dict] = []
+    raw: list[dict] = []
     buf_texts: list[str] = []
     buf_indices: list[int] = []
     buf_start: float | None = None
@@ -131,7 +163,7 @@ def _merge_segments_into_sentences(
         ends_sentence = text[-1] in ".?!…"
 
         if ends_sentence or word_count >= max_words:
-            sentences.append({
+            raw.append({
                 "text": " ".join(buf_texts),
                 "start": buf_start,
                 "end": seg["end"],
@@ -143,12 +175,24 @@ def _merge_segments_into_sentences(
             word_count = 0
 
     if buf_texts:
-        sentences.append({
+        raw.append({
             "text": " ".join(buf_texts),
             "start": buf_start,
             "end": segments[buf_indices[-1]]["end"],
             "segment_indices": list(buf_indices),
         })
+
+    # Merge short sentences back into the previous one
+    sentences: list[dict] = []
+    for sent in raw:
+        wc = len(sent["text"].split())
+        if sentences and wc < min_words:
+            prev = sentences[-1]
+            prev["text"] = prev["text"] + " " + sent["text"]
+            prev["end"] = sent["end"]
+            prev["segment_indices"] = prev["segment_indices"] + sent["segment_indices"]
+        else:
+            sentences.append(sent)
 
     return sentences
 
@@ -189,8 +233,8 @@ def _extract_claims_llm(
     sentences: list[dict],
     cfs_indices: list[int],
     topic: str = "",
-    context_window: int = 2,
-    model: str = OPENAI_MODEL,
+    context_window: int = 5,
+    model: str = OPENAI_EXTRACT_MODEL,
 ) -> list[dict]:
     """For each CFS sentence, send it with context to GPT-4o-mini for extraction."""
     if not OPENAI_API_KEY:
@@ -229,7 +273,7 @@ def _extract_claims_llm(
             f"CONTEXT:\n{context_block}"
         )
 
-        logger.debug("LLM extract for sentence %d: %s", idx, sent["text"][:80])
+        logger.debug("LLM extract for sentence %d: %s", idx, sent["text"])
 
         try:
             response = client.chat.completions.create(
@@ -239,7 +283,7 @@ def _extract_claims_llm(
                     {"role": "user", "content": user_msg},
                 ],
                 temperature=0.0,
-                max_tokens=300,
+                max_tokens=400,
             )
             answer = (response.choices[0].message.content or "").strip()
 
@@ -247,12 +291,37 @@ def _extract_claims_llm(
                 logger.debug("  LLM discarded sentence %d.", idx)
                 continue
 
+            # Parse chain-of-thought output: extract CLAIM: lines.
+            # The model may number lines ("1. SUBJECT:", "2. CLAIM:"),
+            # so strip leading digits/punctuation before matching.
+            claim_lines: list[str] = []
             for line in answer.splitlines():
-                line = line.strip()
-                if not line:
+                stripped = _NUM_PREFIX_RE.sub("", line.strip())
+                if stripped.upper().startswith("CLAIM:"):
+                    claim_lines.append(stripped[len("CLAIM:"):].strip())
+
+            # Fallback: if no CLAIM: prefix found, treat non-empty
+            # lines that aren't reasoning prefixes as claims
+            if not claim_lines:
+                for line in answer.splitlines():
+                    stripped = _NUM_PREFIX_RE.sub("", line.strip())
+                    if not stripped:
+                        continue
+                    upper = stripped.upper()
+                    if any(upper.startswith(p) for p in (
+                        "SUBJECT:", "STATEMENT:", "VERIFIABLE:",
+                    )):
+                        continue
+                    if upper == "NONE":
+                        claim_lines = []
+                        break
+                    claim_lines.append(stripped)
+
+            for claim_text in claim_lines:
+                if not claim_text:
                     continue
                 claims.append({
-                    "claim_text": line,
+                    "claim_text": claim_text,
                     "claim_original": sent["text"],
                     "start": sent["start"],
                     "end": sent["end"],
@@ -263,7 +332,7 @@ def _extract_claims_llm(
             logger.exception(
                 "LLM extraction failed for sentence %d: %s",
                 idx,
-                sent["text"][:80],
+                sent["text"],
             )
             claims.append({
                 "claim_text": sent["text"],

@@ -9,8 +9,9 @@ import sys
 from pathlib import Path
 
 from claim_detector import detect_claims
-from config import TRANSCRIPTS_DIR
+from config import ENABLE_WEB_EVIDENCE, TRANSCRIPTS_DIR
 from deduplicator import deduplicate
+from evidence import find_evidence
 from fact_checker import check_claims
 from reporter import generate_results
 from scraper import download_audio
@@ -18,11 +19,6 @@ from topic import extract_topic
 from transcriber import transcribe
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_PLAYLIST = (
-    "https://www.youtube.com/playlist?list=PLdPrKDvwrog6SPKzMAVh1d6cPVtGtDIeT"
-)
-
 
 def _print_report(claims: list[dict], video_id: str) -> None:
     logger.info("=== Report for %s ===", video_id)
@@ -34,20 +30,28 @@ def _print_report(claims: list[dict], video_id: str) -> None:
             "  [%d] (cfs=%.2f) %s",
             i,
             float(score),
-            text[:120],
+            text,
         )
         if relevant:
             for j, fc in enumerate(relevant, 1):
-                fc_title = fc.get("title") or fc.get("claim") or str(fc)[:100]
+                fc_title = fc.get("title") or fc.get("claim") or str(fc)
                 logger.info("       FC-%d: %s", j, fc_title)
         else:
             logger.info("       No relevant fact-checks found.")
+        we = claim.get("web_evidence")
+        if we and we.get("assessment") not in (None, "UNRELATED"):
+            logger.info(
+                "       Evidence [%s]: %s",
+                we["assessment"],
+                we.get("summary", ""),
+            )
 
 
 def run_pipeline(
     url: str,
     max_videos: int = 1,
     skip_factcheck: bool = False,
+    web_evidence: bool = ENABLE_WEB_EVIDENCE,
 ) -> None:
     logger.info("=== Step 1: Scraping audio from YouTube ===")
     videos = download_audio(url, max_videos=max_videos)
@@ -99,9 +103,14 @@ def run_pipeline(
         logger.info("%d claim(s) after deduplication.", len(claims))
 
         if not skip_factcheck:
-            logger.info("=== Step 5: Searching fact-check knowledge base ===")
-            claims = check_claims(claims, video_id)
+            logger.info("=== Step 5: Searching fact-checks (KB + Google) ===")
+            claims = check_claims(claims, video_id, language=language)
 
+        if web_evidence:
+            logger.info("=== Step 5b: Searching web evidence (authoritative sources) ===")
+            claims = find_evidence(claims, language=language)
+
+        if not skip_factcheck or web_evidence:
             logger.info("=== Step 6: Generating results ===")
             generate_results(
                 claims, video_id,
@@ -118,9 +127,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Video fact-checking pipeline")
     parser.add_argument(
         "url",
-        nargs="?",
-        default=DEFAULT_PLAYLIST,
-        help="YouTube video or playlist URL (default: Markus Lanz playlist)",
+        help="YouTube video or playlist URL",
     )
     parser.add_argument(
         "--max-videos",
@@ -132,6 +139,12 @@ def main() -> None:
         "--skip-factcheck",
         action="store_true",
         help="Skip KB search and relevance judgment (steps 4-5)",
+    )
+    parser.add_argument(
+        "--web-evidence",
+        action="store_true",
+        default=ENABLE_WEB_EVIDENCE,
+        help="Search authoritative web sources for evidence (requires TAVILY_API_KEY)",
     )
     parser.add_argument(
         "--log-level",
@@ -151,6 +164,7 @@ def main() -> None:
             args.url,
             args.max_videos,
             skip_factcheck=args.skip_factcheck,
+            web_evidence=args.web_evidence,
         )
     except KeyboardInterrupt:
         logger.info("Interrupted.")
