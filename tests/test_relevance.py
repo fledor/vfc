@@ -75,7 +75,7 @@ def test_check_claims_no_crash_when_no_factchecks(monkeypatch, tmp_path):
     aborted the whole run whenever a claim had no surviving fact-checks.
     """
     monkeypatch.setattr(fact_checker, "OPENAI_API_KEY", "sk-test")
-    monkeypatch.setattr(fact_checker, "OpenAI", lambda **kw: object())
+    monkeypatch.setattr(fact_checker, "get_openai_client", lambda: object())
     monkeypatch.setattr(fact_checker, "_rewrite_queries", lambda text, client, model=None: [text])
     monkeypatch.setattr(fact_checker, "_search_kb", lambda q: [])
     monkeypatch.setattr(fact_checker, "_search_google_fc", lambda q, language="de": [])

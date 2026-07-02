@@ -30,6 +30,7 @@ from config import (
     CW_MODELS,
     OPENAI_API_KEY,
     OPENAI_EXTRACT_MODEL,
+    get_openai_client,
 )
 
 logger = logging.getLogger(__name__)
@@ -289,9 +290,7 @@ def _extract_claims_llm(
 
     system_prompt = EXTRACT_PROMPT_TEMPLATE.format(topic=topic or "unknown")
 
-    from openai import OpenAI
-
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = get_openai_client()
     claims: list[dict] = []
 
     for idx in cfs_indices:

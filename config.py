@@ -24,6 +24,12 @@ OPENAI_EXTRACT_MODEL = os.getenv("OPENAI_EXTRACT_MODEL", OPENAI_MODEL)
 # Stronger model for FC relevance judgment — nuanced multi-factor reasoning benefits from better model
 OPENAI_RELEVANCE_MODEL = os.getenv("OPENAI_RELEVANCE_MODEL", "gpt-4.1-mini")
 
+# Per-request timeout (seconds) and retry count for OpenAI calls. The SDK
+# retries transient failures (429, 5xx, connection errors) with exponential
+# backoff up to max_retries.
+OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "60"))
+OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "4"))
+
 # Per-language checkworthiness models (all 3-class ClaimBuster taxonomy).
 # Set CW_MODEL_NAME to override language routing with a single model.
 CW_MODELS: dict[str, str] = {
@@ -103,6 +109,21 @@ if _extra:
 
 for d in (AUDIO_DIR, TRANSCRIPTS_DIR, CLAIMS_DIR, FACTCHECKS_DIR, RESULTS_DIR):
     d.mkdir(parents=True, exist_ok=True)
+
+
+def get_openai_client():
+    """Return an OpenAI client with a bounded timeout and automatic retries.
+
+    Centralizes client construction so every pipeline stage shares the same
+    timeout and exponential-backoff retry behaviour for transient failures.
+    """
+    from openai import OpenAI
+
+    return OpenAI(
+        api_key=OPENAI_API_KEY,
+        timeout=OPENAI_TIMEOUT,
+        max_retries=OPENAI_MAX_RETRIES,
+    )
 
 
 def validate_config() -> None:

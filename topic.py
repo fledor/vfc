@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from config import OPENAI_API_KEY, OPENAI_MODEL
+from config import OPENAI_API_KEY, OPENAI_MODEL, get_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +50,7 @@ def extract_topic(
 
     user_msg = f"METADATA:\n{meta_block}\n\nTRANSCRIPT OPENING:\n{opening_text}"
 
-    from openai import OpenAI
-
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = get_openai_client()
     try:
         response = client.chat.completions.create(
             model=OPENAI_MODEL,

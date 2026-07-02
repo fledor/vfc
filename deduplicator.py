@@ -17,6 +17,7 @@ from config import (
     DEDUP_SIMILARITY_THRESHOLD,
     OPENAI_API_KEY,
     OPENAI_MODEL,
+    get_openai_client,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,9 +52,7 @@ def _llm_subsumption_check(text_a: str, text_b: str) -> str:
     if not OPENAI_API_KEY:
         return "DISTINCT"
 
-    from openai import OpenAI
-
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = get_openai_client()
     try:
         response = client.chat.completions.create(
             model=OPENAI_MODEL,

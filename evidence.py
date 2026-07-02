@@ -13,6 +13,7 @@ from config import (
     OPENAI_API_KEY,
     OPENAI_MODEL,
     TAVILY_API_KEY,
+    get_openai_client,
 )
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ def _search_tavily(
             search_depth="advanced",
             max_results=max_results,
             include_domains=domains or EVIDENCE_DOMAINS,
+            timeout=60,
         )
         results = response.get("results", [])
         return [
@@ -208,7 +210,7 @@ def find_evidence(
         logger.warning("OPENAI_API_KEY not set — skipping evidence assessment.")
         return claims
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = get_openai_client()
 
     credits_exhausted = False
 

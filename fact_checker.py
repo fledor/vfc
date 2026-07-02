@@ -9,7 +9,9 @@ from pathlib import Path
 
 import requests
 from openai import OpenAI
+from requests.adapters import HTTPAdapter
 from sentence_transformers import SentenceTransformer
+from urllib3.util.retry import Retry
 
 from config import (
     DEDUP_MODEL_NAME,
@@ -24,11 +26,31 @@ from config import (
     OPENAI_API_KEY,
     OPENAI_MODEL,
     OPENAI_RELEVANCE_MODEL,
+    get_openai_client,
 )
 
 logger = logging.getLogger(__name__)
 
 _st_model: SentenceTransformer | None = None
+
+
+def _make_session() -> requests.Session:
+    """A requests session that retries transient HTTP failures with backoff."""
+    retry = Retry(
+        total=3,
+        backoff_factor=0.5,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET", "POST"}),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session = requests.Session()
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+_session = _make_session()
 
 RELEVANCE_PROMPT = """\
 You are a relevance judge for a fact-checking system.
@@ -97,7 +119,7 @@ def _search_kb(query: str) -> list[dict]:
         "include_evidence": PRIVATE_KB_INCLUDE_EVIDENCE,
     }
 
-    resp = requests.post(PRIVATE_KB_API_URL, headers=headers, json=payload, timeout=120)
+    resp = _session.post(PRIVATE_KB_API_URL, headers=headers, json=payload, timeout=120)
     resp.raise_for_status()
     data = resp.json()
 
@@ -149,7 +171,7 @@ def _search_google_fc(query: str, language: str = "de") -> list[dict]:
 
     for params in param_variants:
         try:
-            resp = requests.get(_GOOGLE_FC_URL, params=params, timeout=30)
+            resp = _session.get(_GOOGLE_FC_URL, params=params, timeout=30)
             resp.raise_for_status()
             data = resp.json()
         except Exception:
@@ -402,7 +424,7 @@ def check_claims(
             "OPENAI_API_KEY not set. Required for relevance judgment."
         )
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = get_openai_client()
 
     for i, claim in enumerate(claims):
         claim_text = claim["claim_text"]
