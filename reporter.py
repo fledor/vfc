@@ -12,8 +12,24 @@ logger = logging.getLogger(__name__)
 
 
 def _has_evidence(claim: dict) -> bool:
+    """True if any topically-relevant web evidence was attached (incl. inconclusive)."""
     we = claim.get("web_evidence")
     return bool(we and we.get("assessment") in ("SUPPORTS", "REFUTES", "INSUFFICIENT"))
+
+
+def _is_conclusive_evidence(claim: dict) -> bool:
+    """True if web evidence conclusively supports or refutes the claim."""
+    we = claim.get("web_evidence")
+    return bool(we and we.get("assessment") in ("SUPPORTS", "REFUTES"))
+
+
+def _is_verified(claim: dict) -> bool:
+    """A claim is *verified* if a fact-check matched or web evidence was conclusive.
+
+    A claim that is shown but not verified (only INSUFFICIENT evidence) is
+    *inconclusive* — surfaced for the reader, but not counted as verified.
+    """
+    return bool(claim.get("relevant_factchecks")) or _is_conclusive_evidence(claim)
 
 
 def _fmt_timestamp(seconds: float) -> str:
@@ -50,14 +66,13 @@ def generate_results(
     md_path = output_dir / f"{video_id}.md"
     md_path.write_text(md_text)
 
-    fc_count = sum(1 for c in matched if c.get("relevant_factchecks"))
-    ev_count = sum(1 for c in matched if _has_evidence(c))
+    verified = sum(1 for c in matched if _is_verified(c))
+    inconclusive = len(matched) - verified
     logger.info(
-        "Results: %d / %d claims with matches (%d fact-checks, %d web evidence) → %s",
-        len(matched),
+        "Results: %d verified, %d inconclusive (%d claims examined) → %s",
+        verified,
+        inconclusive,
         len(claims),
-        fc_count,
-        ev_count,
         output_dir,
     )
     return json_path, md_path
@@ -79,7 +94,8 @@ def _build_results_json(
         "language": language,
         "topic": topic,
         "total_claims": len(all_claims),
-        "matched_claims": len(matched),
+        "verified_claims": sum(1 for c in matched if _is_verified(c)),
+        "inconclusive_claims": sum(1 for c in matched if not _is_verified(c)),
         "claims": [],
     }
 
@@ -89,6 +105,7 @@ def _build_results_json(
             "claim_original": claim.get("claim_original", ""),
             "timestamp": f"{_fmt_timestamp(claim.get('start', 0))}–{_fmt_timestamp(claim.get('end', 0))}",
             "cfs_score": round(claim.get("cfs_score", 0), 3),
+            "status": "verified" if _is_verified(claim) else "inconclusive",
             "factchecks": [],
         }
         for fc in claim.get("relevant_factchecks", []):
@@ -130,23 +147,18 @@ def _build_markdown(results: dict) -> str:
     if results.get("topic"):
         lines.append(f"**Topic:** {results['topic']}")
     lines.append("")
-    fc_matched = sum(1 for c in results["claims"] if c.get("factchecks"))
-    ev_matched = sum(1 for c in results["claims"] if c.get("web_evidence"))
-    parts = []
-    if fc_matched:
-        parts.append(f"{fc_matched} with fact-checks")
-    if ev_matched:
-        parts.append(f"{ev_matched} with web evidence")
-    detail = f" ({', '.join(parts)})" if parts else ""
     lines.append(
-        f"**{results['matched_claims']} / {results['total_claims']}** "
-        f"claims matched{detail}.\n"
+        f"**{results['verified_claims']} verified**, "
+        f"{results['inconclusive_claims']} with inconclusive evidence "
+        f"({results['total_claims']} claims examined).\n"
     )
     lines.append("---\n")
 
     for i, claim in enumerate(results["claims"], 1):
+        status_label = "Verified" if claim.get("status") == "verified" else "Inconclusive"
         lines.append(
-            f"### Claim {i} ({claim['timestamp']}, CFS {claim['cfs_score']:.2f})\n"
+            f"### Claim {i} — {status_label} "
+            f"({claim['timestamp']}, CFS {claim['cfs_score']:.2f})\n"
         )
         lines.append(f"> {claim['claim_text']}\n")
 
