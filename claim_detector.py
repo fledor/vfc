@@ -40,6 +40,44 @@ _models: dict[str, tuple[AutoTokenizer, AutoModelForSequenceClassification, int]
 # Strips leading numbering like "1. ", "2) ", "3: " from CoT output lines.
 _NUM_PREFIX_RE = re.compile(r"^[\d]+[\.\):\-]\s*", re.ASCII)
 
+
+def _parse_claim_lines(answer: str) -> list[str]:
+    """Extract claim strings from the LLM's chain-of-thought output.
+
+    Primary path: collect lines prefixed with ``CLAIM:`` (tolerating leading
+    numbering like ``2. CLAIM:``). Fallback: if no such prefix exists, treat
+    non-empty lines that are not reasoning prefixes (SUBJECT/STATEMENT/
+    VERIFIABLE) as claims. Returns an empty list when the model answered
+    ``NONE``.
+    """
+    if answer.strip().upper() == "NONE":
+        return []
+
+    claim_lines: list[str] = []
+    for line in answer.splitlines():
+        stripped = _NUM_PREFIX_RE.sub("", line.strip())
+        if stripped.upper().startswith("CLAIM:"):
+            claim_lines.append(stripped[len("CLAIM:"):].strip())
+
+    # Fallback: no CLAIM: prefix found — treat plain lines as claims,
+    # skipping reasoning-prefix lines.
+    if not claim_lines:
+        for line in answer.splitlines():
+            stripped = _NUM_PREFIX_RE.sub("", line.strip())
+            if not stripped:
+                continue
+            upper = stripped.upper()
+            if any(upper.startswith(p) for p in (
+                "SUBJECT:", "STATEMENT:", "VERIFIABLE:",
+            )):
+                continue
+            if upper == "NONE":
+                return []
+            claim_lines.append(stripped)
+
+    return [c for c in claim_lines if c]
+
+
 EXTRACT_PROMPT_TEMPLATE = """\
 You are a claim extraction assistant for a fact-checking pipeline.
 
@@ -287,39 +325,12 @@ def _extract_claims_llm(
             )
             answer = (response.choices[0].message.content or "").strip()
 
-            if answer.upper() == "NONE":
+            claim_lines = _parse_claim_lines(answer)
+            if not claim_lines:
                 logger.debug("  LLM discarded sentence %d.", idx)
                 continue
 
-            # Parse chain-of-thought output: extract CLAIM: lines.
-            # The model may number lines ("1. SUBJECT:", "2. CLAIM:"),
-            # so strip leading digits/punctuation before matching.
-            claim_lines: list[str] = []
-            for line in answer.splitlines():
-                stripped = _NUM_PREFIX_RE.sub("", line.strip())
-                if stripped.upper().startswith("CLAIM:"):
-                    claim_lines.append(stripped[len("CLAIM:"):].strip())
-
-            # Fallback: if no CLAIM: prefix found, treat non-empty
-            # lines that aren't reasoning prefixes as claims
-            if not claim_lines:
-                for line in answer.splitlines():
-                    stripped = _NUM_PREFIX_RE.sub("", line.strip())
-                    if not stripped:
-                        continue
-                    upper = stripped.upper()
-                    if any(upper.startswith(p) for p in (
-                        "SUBJECT:", "STATEMENT:", "VERIFIABLE:",
-                    )):
-                        continue
-                    if upper == "NONE":
-                        claim_lines = []
-                        break
-                    claim_lines.append(stripped)
-
             for claim_text in claim_lines:
-                if not claim_text:
-                    continue
                 claims.append({
                     "claim_text": claim_text,
                     "claim_original": sent["text"],

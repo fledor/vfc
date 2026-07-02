@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from claim_detector import detect_claims
-from config import ENABLE_WEB_EVIDENCE, TRANSCRIPTS_DIR
+from config import ENABLE_WEB_EVIDENCE, TRANSCRIPTS_DIR, validate_config
 from deduplicator import deduplicate
 from evidence import find_evidence
 from fact_checker import check_claims
@@ -158,6 +158,8 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    validate_config()
 
     try:
         run_pipeline(

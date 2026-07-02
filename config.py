@@ -1,4 +1,5 @@
 from pathlib import Path
+import logging
 import os
 
 from dotenv import load_dotenv
@@ -41,14 +42,15 @@ DEDUP_MODEL_NAME = os.getenv(
 )
 DEDUP_SIMILARITY_THRESHOLD = float(os.getenv("DEDUP_SIMILARITY_THRESHOLD", "0.85"))
 
-# Fact-check knowledge base API
-KB_API_URL = os.getenv(
-    "KB_API_URL",
-    "https://your-kb.example.com/api/search",
+# Optional private fact-check knowledge base API (bring-your-own endpoint).
+# Both URL and key must be set for this source to be queried; otherwise the
+# pipeline skips it and relies on Google Fact Check + web evidence.
+PRIVATE_KB_API_URL = os.getenv("PRIVATE_KB_API_URL", "")
+PRIVATE_KB_API_KEY = os.getenv("PRIVATE_KB_API_KEY", "")
+PRIVATE_KB_SEARCH_LIMIT = int(os.getenv("PRIVATE_KB_SEARCH_LIMIT", "10"))
+PRIVATE_KB_INCLUDE_EVIDENCE = (
+    os.getenv("PRIVATE_KB_INCLUDE_EVIDENCE", "false").lower() == "true"
 )
-KB_API_KEY = os.getenv("KB_API_KEY", "")
-KB_SEARCH_LIMIT = int(os.getenv("KB_SEARCH_LIMIT", "10"))
-KB_INCLUDE_EVIDENCE = os.getenv("KB_INCLUDE_EVIDENCE", "false").lower() == "true"
 
 # Google Fact Check Tools API
 GOOGLE_FC_API_KEY = os.getenv("GOOGLE_FACTCHECK_API_KEY", "")
@@ -101,3 +103,31 @@ if _extra:
 
 for d in (AUDIO_DIR, TRANSCRIPTS_DIR, CLAIMS_DIR, FACTCHECKS_DIR, RESULTS_DIR):
     d.mkdir(parents=True, exist_ok=True)
+
+
+def validate_config() -> None:
+    """Fail fast on missing required config; log optional-integration status.
+
+    ``OPENAI_API_KEY`` is required (claim extraction + relevance judgment).
+    The other integrations are optional and degrade gracefully — their status
+    is logged so the user knows which sources are active for this run.
+    """
+    if not OPENAI_API_KEY:
+        raise SystemExit(
+            "OPENAI_API_KEY is not set. It is required for claim extraction and "
+            "relevance judgment. Set it in your environment or a .env file."
+        )
+
+    logger = logging.getLogger(__name__)
+    integrations = [
+        ("Private KB", bool(PRIVATE_KB_API_URL and PRIVATE_KB_API_KEY),
+         "PRIVATE_KB_API_URL + PRIVATE_KB_API_KEY"),
+        ("Google Fact Check", bool(GOOGLE_FC_API_KEY), "GOOGLE_FACTCHECK_API_KEY"),
+        ("Web evidence (Tavily)", bool(TAVILY_API_KEY), "TAVILY_API_KEY"),
+    ]
+    for name, enabled, env_names in integrations:
+        label = f"{name}:"
+        if enabled:
+            logger.info("%-24s enabled", label)
+        else:
+            logger.info("%-24s disabled (%s not set)", label, env_names)

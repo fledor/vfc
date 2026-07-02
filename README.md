@@ -14,7 +14,7 @@ evidence.
 3. Topic extract   LLM summarises topic from video title, channel, and transcript (in transcript language)
 4. Detect claims   ClaimBuster classifier → GPT-4o-mini extraction with CoT decontextualisation
 5. Deduplicate     Sentence embeddings + LLM subsumption check
-6. Fact-check      Query reformulation → KB + Google Fact Check API → concurrent CoT relevance judgment
+6. Fact-check      Query reformulation → optional private KB + Google Fact Check API → concurrent CoT relevance judgment
 7. Web evidence    Tavily search on authoritative domains → LLM evidence assessment (SUPPORTS/REFUTES/INSUFFICIENT)
 8. Report          JSON + markdown with matched claims, verdicts, and evidence summaries
 ```
@@ -27,15 +27,31 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+For a worked end-to-end example with aggregate results and analysis, see
+[`docs/case-study.md`](docs/case-study.md).
+
 ### Required configuration
 
-Create a `.env` file (or export the variables):
+Create a `.env` file (or export the variables). Only `OPENAI_API_KEY` is
+required; the pipeline validates it at startup and fails fast if it is missing.
+The remaining integrations are optional — each is skipped gracefully when its
+key is absent, and the enabled/disabled status is logged at startup.
 
 ```bash
-OPENAI_API_KEY=sk-...             # claim extraction, dedup, query rewrite, relevance judgment
-KB_API_KEY=...          # fact-check knowledge base
-GOOGLE_FACTCHECK_API_KEY=...     # Google Fact Check Tools API
-TAVILY_API_KEY=tvly-...          # web evidence search (required for --web-evidence)
+OPENAI_API_KEY=sk-...             # REQUIRED — claim extraction, dedup, query rewrite, relevance judgment
+GOOGLE_FACTCHECK_API_KEY=...      # optional — Google Fact Check Tools API
+TAVILY_API_KEY=tvly-...           # optional — web evidence search (needed for --web-evidence)
+```
+
+#### Optional private knowledge base
+
+`vfc` can additionally query a private fact-check knowledge base (bring your
+own endpoint). It is queried only when **both** variables below are set;
+otherwise the pipeline relies on Google Fact Check + web evidence.
+
+```bash
+PRIVATE_KB_API_URL=https://your-kb.example.com/api/search
+PRIVATE_KB_API_KEY=...
 ```
 
 ### Optional environment variables
@@ -45,7 +61,7 @@ WHISPER_LANGUAGE=auto                  # auto-detect (default) or force e.g. "de
 CW_MODEL_NAME=                        # override per-language model routing
 CW_CONFIDENCE_THRESHOLD=0.5           # CFS classification threshold
 DEDUP_SIMILARITY_THRESHOLD=0.85       # hard cosine threshold for dedup
-KB_SEARCH_LIMIT=10                    # max results per KB query
+PRIVATE_KB_SEARCH_LIMIT=10            # max results per private-KB query
 WHISPER_MODEL=large-v3                # whisper model size
 OPENAI_MODEL=gpt-4o-mini             # LLM model for most steps
 OPENAI_EXTRACT_MODEL=                 # dedicated model for claim extraction (defaults to OPENAI_MODEL)
@@ -69,6 +85,17 @@ vfc --skip-factcheck
 
 # Debug logging
 vfc --log-level DEBUG
+```
+
+## Testing
+
+A small suite covers the parse/transform boundaries most prone to breakage
+(claim parsing, dedup merge decisions, fact-check relevance gating, evidence
+label parsing, transcript segment merging, and config validation):
+
+```bash
+pip install -e '.[dev]'
+pytest
 ```
 
 ## Design choices and references
@@ -107,8 +134,9 @@ Semantic deduplication with `paraphrase-multilingual-mpnet-base-v2`:
 
 ### Fact-check retrieval
 
-Query reformulation + concurrent search across the KB and Google Fact
-Check API. Relevance judged via structured multi-criteria CoT prompt (MEDIA gate,
+Query reformulation + concurrent search across an optional private knowledge
+base and the Google Fact Check API. Relevance judged via structured
+multi-criteria CoT prompt (MEDIA gate,
 SUBJECT, ASSERTION, TEMPORAL alignment) with two safeguards: a consistency check
 that rejects matches where the reasoning contradicts the verdict, and a
 confirmation call that requires two independent LLM judgments to agree.
@@ -146,3 +174,7 @@ data/
 
 - Arslan, F., et al. (2020). *A Benchmark Dataset of Check-Worthy Factual Claims.* [arXiv:2004.14425](https://arxiv.org/abs/2004.14425)
 - Chen, Y., et al. (2025). *Claimify: LLM-Based Claim Extraction from Real-World Sources.* [ACL 2025](https://aclanthology.org/2025.acl-long.348.pdf)
+
+## License
+
+Released under the [MIT License](LICENSE).
