@@ -7,7 +7,6 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import numpy as np
 import requests
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
@@ -459,17 +458,18 @@ def check_claims(
         )
 
         relevant = []
-        with ThreadPoolExecutor(max_workers=min(len(filtered), 3)) as pool:
-            futures = {
-                pool.submit(_judge_relevance, claim_text, fc, client, OPENAI_RELEVANCE_MODEL): fc
-                for fc in filtered
-            }
-            for future in as_completed(futures):
-                is_relevant, reasoning = future.result()
-                fc = futures[future]
-                fc["_relevance_reasoning"] = reasoning
-                if is_relevant:
-                    relevant.append(fc)
+        if filtered:
+            with ThreadPoolExecutor(max_workers=min(len(filtered), 3)) as pool:
+                futures = {
+                    pool.submit(_judge_relevance, claim_text, fc, client, OPENAI_RELEVANCE_MODEL): fc
+                    for fc in filtered
+                }
+                for future in as_completed(futures):
+                    is_relevant, reasoning = future.result()
+                    fc = futures[future]
+                    fc["_relevance_reasoning"] = reasoning
+                    if is_relevant:
+                        relevant.append(fc)
 
         claim["relevant_factchecks"] = relevant
         logger.info(

@@ -24,7 +24,7 @@ def _print_report(claims: list[dict], video_id: str) -> None:
     logger.info("=== Report for %s ===", video_id)
     for i, claim in enumerate(claims, 1):
         text = claim["claim_text"]
-        score = claim.get("cfs_score", claim.get("cw_score_max", 0))
+        score = claim.get("cfs_score", 0)
         relevant = claim.get("relevant_factchecks", [])
         logger.info(
             "  [%d] (cfs=%.2f) %s",

@@ -97,7 +97,6 @@ def _build_results_json(
                 "title": fc.get("title"),
                 "claim": fc.get("claim", ""),
                 "verdict": fc.get("verdict", ""),
-                "verdict_normalized": fc.get("verdict_normalized", ""),
                 "url": fc.get("url", ""),
             })
 
@@ -159,7 +158,7 @@ def _build_markdown(results: dict) -> str:
             lines.append("|--------|---------|-----------------|------|")
             for fc in claim["factchecks"]:
                 source = fc.get("source", "")
-                verdict = fc.get("verdict") or fc.get("verdict_normalized") or "—"
+                verdict = fc.get("verdict") or "—"
                 fc_claim = (fc.get("claim") or fc.get("title") or "").replace("|", "\\|")
                 if len(fc_claim) > 120:
                     fc_claim = fc_claim[:117] + "..."

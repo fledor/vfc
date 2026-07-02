@@ -81,7 +81,7 @@ vfc "https://www.youtube.com/watch?v=VIDEO_ID" --web-evidence
 vfc "https://www.youtube.com/playlist?list=PLAYLIST_ID" --max-videos 10
 
 # Skip fact-check step (detection + dedup only)
-vfc --skip-factcheck
+vfc "https://www.youtube.com/watch?v=VIDEO_ID" --skip-factcheck
 
 # Debug logging
 vfc --log-level DEBUG

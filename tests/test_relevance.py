@@ -6,6 +6,7 @@ through, irrelevant fact-checks get attached to claims.
 """
 from __future__ import annotations
 
+import fact_checker
 from fact_checker import _is_consistent_relevant, _parse_relevance
 
 
@@ -65,3 +66,22 @@ def test_media_gate_rejects_when_media_fc_but_irrelevant():
         "VERDICT": "relevant",
     }
     assert _is_consistent_relevant(parsed) is False
+
+
+def test_check_claims_no_crash_when_no_factchecks(monkeypatch, tmp_path):
+    """Regression: an empty post-filter set must not spin up a 0-worker pool.
+
+    ThreadPoolExecutor(max_workers=0) raises ValueError, which previously
+    aborted the whole run whenever a claim had no surviving fact-checks.
+    """
+    monkeypatch.setattr(fact_checker, "OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(fact_checker, "OpenAI", lambda **kw: object())
+    monkeypatch.setattr(fact_checker, "_rewrite_queries", lambda text, client, model=None: [text])
+    monkeypatch.setattr(fact_checker, "_search_kb", lambda q: [])
+    monkeypatch.setattr(fact_checker, "_search_google_fc", lambda q, language="de": [])
+
+    claims = [{"claim_text": "An obscure claim with no matching fact-checks."}]
+    out = fact_checker.check_claims(claims, "vid_test", output_dir=tmp_path)
+
+    assert out[0]["factchecks"] == []
+    assert out[0]["relevant_factchecks"] == []

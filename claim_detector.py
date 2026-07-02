@@ -30,7 +30,6 @@ from config import (
     CW_MODELS,
     OPENAI_API_KEY,
     OPENAI_EXTRACT_MODEL,
-    OPENAI_MODEL,
 )
 
 logger = logging.getLogger(__name__)

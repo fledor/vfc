@@ -80,7 +80,7 @@ def deduplicate(
     """Remove duplicate and subsumed claims.
 
     Hard threshold (``threshold``, default 0.85): auto-merge without LLM.
-    Soft threshold (0.65 – ``threshold``): use LLM subsumption check.
+    Soft threshold (0.55 – ``threshold``): use LLM subsumption check.
     Below soft threshold: always keep both.
 
     For each group, keeps the longest claim text (most informative).
