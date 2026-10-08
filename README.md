@@ -14,7 +14,7 @@ evidence.
 3. Topic extract   LLM summarises topic from video title, channel, and transcript (in transcript language)
 4. Detect claims   ClaimBuster classifier → GPT-4o-mini extraction with CoT decontextualisation
 5. Deduplicate     Sentence embeddings + LLM subsumption check
-6. Fact-check      Query reformulation → optional private KB + Google Fact Check API → concurrent CoT relevance judgment
+6. Fact-check      Query reformulation → optional KB + Google Fact Check API → concurrent CoT relevance judgment
 7. Web evidence    Tavily search on authoritative domains → LLM evidence assessment (SUPPORTS/REFUTES/INSUFFICIENT)
 8. Report          JSON + markdown with matched claims, verdicts, and evidence summaries
 ```
@@ -50,8 +50,8 @@ own endpoint). It is queried only when **both** variables below are set;
 otherwise the pipeline relies on Google Fact Check + web evidence.
 
 ```bash
-PRIVATE_KB_API_URL=https://your-kb.example.com/api/search
-PRIVATE_KB_API_KEY=...
+KB_API_URL=https://your-kb.example.com/api/search
+KB_API_KEY=...
 ```
 
 ### Optional environment variables
@@ -61,7 +61,7 @@ WHISPER_LANGUAGE=auto                  # auto-detect (default) or force e.g. "de
 CW_MODEL_NAME=                        # override per-language model routing
 CW_CONFIDENCE_THRESHOLD=0.5           # CFS classification threshold
 DEDUP_SIMILARITY_THRESHOLD=0.85       # hard cosine threshold for dedup
-PRIVATE_KB_SEARCH_LIMIT=10            # max results per private-KB query
+KB_SEARCH_LIMIT=10            # max results per private-KB query
 WHISPER_MODEL=large-v3                # whisper model size
 OPENAI_MODEL=gpt-4o-mini             # LLM model for most steps
 OPENAI_EXTRACT_MODEL=                 # dedicated model for claim extraction (defaults to OPENAI_MODEL)

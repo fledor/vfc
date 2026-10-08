@@ -51,12 +51,10 @@ DEDUP_SIMILARITY_THRESHOLD = float(os.getenv("DEDUP_SIMILARITY_THRESHOLD", "0.85
 # Optional private fact-check knowledge base API (bring-your-own endpoint).
 # Both URL and key must be set for this source to be queried; otherwise the
 # pipeline skips it and relies on Google Fact Check + web evidence.
-PRIVATE_KB_API_URL = os.getenv("PRIVATE_KB_API_URL", "")
-PRIVATE_KB_API_KEY = os.getenv("PRIVATE_KB_API_KEY", "")
-PRIVATE_KB_SEARCH_LIMIT = int(os.getenv("PRIVATE_KB_SEARCH_LIMIT", "10"))
-PRIVATE_KB_INCLUDE_EVIDENCE = (
-    os.getenv("PRIVATE_KB_INCLUDE_EVIDENCE", "false").lower() == "true"
-)
+KB_API_URL = os.getenv("KB_API_URL", "")
+KB_API_KEY = os.getenv("KB_API_KEY", "")
+KB_SEARCH_LIMIT = int(os.getenv("KB_SEARCH_LIMIT", "10"))
+KB_INCLUDE_EVIDENCE = os.getenv("KB_INCLUDE_EVIDENCE", "false").lower() == "true"
 
 # Google Fact Check Tools API
 GOOGLE_FC_API_KEY = os.getenv("GOOGLE_FACTCHECK_API_KEY", "")
@@ -141,8 +139,8 @@ def validate_config() -> None:
 
     logger = logging.getLogger(__name__)
     integrations = [
-        ("Private KB", bool(PRIVATE_KB_API_URL and PRIVATE_KB_API_KEY),
-         "PRIVATE_KB_API_URL + PRIVATE_KB_API_KEY"),
+        ("Private KB", bool(KB_API_URL and KB_API_KEY),
+         "KB_API_URL + KB_API_KEY"),
         ("Google Fact Check", bool(GOOGLE_FC_API_KEY), "GOOGLE_FACTCHECK_API_KEY"),
         ("Web evidence (Tavily)", bool(TAVILY_API_KEY), "TAVILY_API_KEY"),
     ]

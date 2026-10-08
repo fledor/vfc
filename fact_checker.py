@@ -19,10 +19,10 @@ from config import (
     GOOGLE_FC_API_KEY,
     GOOGLE_FC_MAX_AGE_DAYS,
     GOOGLE_FC_PAGE_SIZE,
-    PRIVATE_KB_API_KEY,
-    PRIVATE_KB_API_URL,
-    PRIVATE_KB_INCLUDE_EVIDENCE,
-    PRIVATE_KB_SEARCH_LIMIT,
+    KB_API_KEY,
+    KB_API_URL,
+    KB_INCLUDE_EVIDENCE,
+    KB_SEARCH_LIMIT,
     OPENAI_API_KEY,
     OPENAI_MODEL,
     OPENAI_RELEVANCE_MODEL,
@@ -102,24 +102,24 @@ def _get_st_model() -> SentenceTransformer:
 def _search_kb(query: str) -> list[dict]:
     """Search an optional private fact-check knowledge base API.
 
-    Requires both ``PRIVATE_KB_API_URL`` and ``PRIVATE_KB_API_KEY``; if either
+    Requires both ``KB_API_URL`` and ``KB_API_KEY``; if either
     is unset the source is skipped.
     """
-    if not (PRIVATE_KB_API_URL and PRIVATE_KB_API_KEY):
+    if not (KB_API_URL and KB_API_KEY):
         logger.debug("Private KB not configured — skipping KB search.")
         return []
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {PRIVATE_KB_API_KEY}",
+        "Authorization": f"Bearer {KB_API_KEY}",
     }
     payload: dict = {
         "query": query,
-        "limit": PRIVATE_KB_SEARCH_LIMIT,
-        "include_evidence": PRIVATE_KB_INCLUDE_EVIDENCE,
+        "limit": KB_SEARCH_LIMIT,
+        "include_evidence": KB_INCLUDE_EVIDENCE,
     }
 
-    resp = _session.post(PRIVATE_KB_API_URL, headers=headers, json=payload, timeout=120)
+    resp = _session.post(KB_API_URL, headers=headers, json=payload, timeout=120)
     resp.raise_for_status()
     data = resp.json()
 

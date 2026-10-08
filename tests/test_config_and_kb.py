@@ -25,15 +25,15 @@ def test_validate_config_passes_with_openai_key(monkeypatch):
 
 
 def test_kb_search_skipped_when_unconfigured(monkeypatch):
-    monkeypatch.setattr(fact_checker, "PRIVATE_KB_API_URL", "")
-    monkeypatch.setattr(fact_checker, "PRIVATE_KB_API_KEY", "")
+    monkeypatch.setattr(fact_checker, "KB_API_URL", "")
+    monkeypatch.setattr(fact_checker, "KB_API_KEY", "")
     assert fact_checker._search_kb("any query") == []
 
 
 def test_kb_search_skipped_when_only_key_set(monkeypatch):
     # URL missing -> still skip, no request attempted.
-    monkeypatch.setattr(fact_checker, "PRIVATE_KB_API_URL", "")
-    monkeypatch.setattr(fact_checker, "PRIVATE_KB_API_KEY", "secret")
+    monkeypatch.setattr(fact_checker, "KB_API_URL", "")
+    monkeypatch.setattr(fact_checker, "KB_API_KEY", "secret")
 
     def _boom(*a, **k):
         raise AssertionError("no HTTP request should be made when KB is unconfigured")
